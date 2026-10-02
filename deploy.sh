@@ -13,6 +13,7 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
   exit 1
 fi
 ssh yoobato-canada-lightsail 'sudo install -d -o ubuntu -g ubuntu /opt/services/korvanbot; sudo install -d -m 700 -o ubuntu -g ubuntu /opt/secrets/korvanbot'
+ssh yoobato-canada-lightsail 'umask 077; if [ ! -e /opt/secrets/korvanbot/telegram.env ]; then : > /opt/secrets/korvanbot/telegram.env; fi'
 git archive HEAD | ssh yoobato-canada-lightsail 'tar -xf - -C /opt/services/korvanbot'
 git rev-parse HEAD | ssh yoobato-canada-lightsail 'cat > /opt/services/korvanbot/DEPLOYED_REVISION'
 ssh yoobato-canada-lightsail 'cd /opt/services/korvanbot; KORVANBOT_ENV_FILE=/opt/secrets/korvanbot/telegram.env docker compose build'
