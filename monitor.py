@@ -58,6 +58,80 @@ class BoardParser(HTMLParser):
             self.row = None
 
 
+class DetailParser(HTMLParser):
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__()
+        self.depth = 0
+        self.body_depth = None
+        self.head_depth = None
+        self.hidden_depth = None
+        self.text = []
+        self.header = []
+        self.has_images = False
+        self.found_body = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag not in self.VOID_TAGS:
+            self.depth += 1
+        classes = attrs.get("class", "").split()
+        if "bo_con" in classes:
+            self.body_depth = self.depth
+            self.found_body = True
+        if "bo_head" in classes:
+            self.head_depth = self.depth
+        if self.body_depth is not None:
+            if tag in {"script", "style"}:
+                self.hidden_depth = self.depth
+            if tag == "img":
+                self.has_images = True
+            if tag in {"br", "p", "li", "tr", "div"}:
+                self.text.append("\n")
+
+    def handle_data(self, data):
+        if self.body_depth is not None and self.hidden_depth is None:
+            self.text.append(data)
+        if self.head_depth is not None:
+            self.header.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in self.VOID_TAGS:
+            return
+        if self.body_depth is not None and tag in {"p", "li", "tr", "div"}:
+            self.text.append("\n")
+        if self.depth == self.hidden_depth:
+            self.hidden_depth = None
+        if self.depth == self.body_depth:
+            self.body_depth = None
+        if self.depth == self.head_depth:
+            self.head_depth = None
+        self.depth = max(0, self.depth - 1)
+
+
+def summarize_body(text, title, has_images=False):
+    paragraphs = [" ".join(p.replace("\u200b", "").replace("\ufeff", "").split()) for p in text.splitlines()]
+    paragraphs = [p for p in paragraphs if p and p != title and not p.startswith(("(사진", "사진제공", "사진 제공"))]
+    if not paragraphs:
+        return "본문이 이미지로 게시되어 있습니다. 자세한 내용은 원문 이미지를 확인해 주세요." if has_images else "본문에 텍스트가 없습니다. 자세한 내용은 원문을 확인해 주세요."
+    # Prefer explicit schedule/application lines, preserving their original text.
+    labels = r"(?:일시|일자|장소|신청\s*기간|접수\s*기간|예약\s*기간|온라인\s*예약|마감)\s*[:：]"
+    important = [p for p in paragraphs[1:] if re.search(labels, p)]
+    selected = [paragraphs[0]] + important[:3] if important else paragraphs[:2]
+    excerpt = "\n".join(selected)
+    if len(excerpt) <= 320:
+        return excerpt
+    return excerpt[:319].rstrip() + "…"
+
+
+def format_message(name, title, date, summary, url):
+    return (f'📢 <b>{html.escape(name)}</b>\n\n'
+            f'<b>{html.escape(title[:1800])}</b>\n{html.escape(date)}\n\n'
+            f'{html.escape(summary)}\n\n'
+            f'<a href="{html.escape(url, quote=True)}">원문 보기</a>')
+
+
 def parse_rss(content):
     root = ET.fromstring(content)
     if root.tag != "rss":
@@ -105,6 +179,15 @@ class Collector:
                 posts[post["url"]] = post
         return sorted(posts.values(), key=lambda p: int(urllib.parse.parse_qs(urllib.parse.urlsplit(p["url"]).query)["seq"][0]))
 
+    def detail(self, url, title):
+        parser = DetailParser()
+        parser.feed(self.get(url))
+        if not parser.found_body:
+            raise ValueError("Post body not recognized")
+        date = re.search(r"\d{4}-\d{2}-\d{2}", " ".join(parser.header))
+        return {"date": date[0] if date else None,
+                "summary": summarize_body("".join(parser.text), title, parser.has_images)}
+
 
 def database(path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,9 +225,10 @@ def telegram(token, channel, text):
         raise RuntimeError("Telegram rejected the message")
 
 
-def deliver(conn, send):
+def deliver(conn, send, get_detail):
     for url, name, title, date in conn.execute("SELECT url,name,title,date FROM posts WHERE sent=0 ORDER BY rowid").fetchall():
-        send(f'📢 <b>주밴쿠버 총영사관 · {html.escape(name)}</b>\n\n{html.escape(title[:2500])}\n{html.escape(date)}\n\n<a href="{html.escape(url, quote=True)}">원문 보기</a>')
+        detail = get_detail(url, title)
+        send(format_message(name, title, detail["date"] or date, detail["summary"], url))
         with conn:
             conn.execute("UPDATE posts SET sent=1 WHERE url=?", (url,))
         LOG.info("Published: %s", title)
@@ -164,7 +248,7 @@ def cycle(config, collector, conn, send):
             failed = True
             LOG.error("%s: collection failed (%s); state retained", board["name"], type(exc).__name__)
     try:
-        deliver(conn, send)
+        deliver(conn, send, collector.detail)
     except Exception as exc:
         failed = True
         LOG.error("Delivery failed (%s); queued posts retained", type(exc).__name__)
