@@ -4,7 +4,7 @@ services:
     build: .
     restart: unless-stopped
     env_file:
-      - ${KORVANBOT_ENV_FILE:?Set the absolute path to the external secrets file}
+      - ${KORVANBOT_ENV_FILE:-.env}
     mem_limit: 128m
     cpus: 0.25
     pids_limit: 64
