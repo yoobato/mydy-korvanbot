@@ -8,6 +8,8 @@
 - 비밀 파일: `/opt/secrets/korvanbot/telegram.env` (권한 600)
 - 상태 DB: `/opt/services/korvanbot/data/state.sqlite3`
 - Compose 프로젝트·서비스: `korvanbot`
+- 공개 채널: https://t.me/korea_vancouver (`@korea_vancouver`)
+- 게시 봇: `@KoreaVancouverBot`
 
 CaLog, ChutChut, BabyLog가 실행 중인 Lightsail에 독립적인 Compose 프로젝트로 배치합니다.
 봇은 HTTP 서버나 webhook을 사용하지 않습니다. 도메인·인바운드 포트·Caddy 설정 변경은 필요 없습니다.
@@ -69,6 +71,8 @@ DB를 지우면 다음 시작에서 기준선을 다시 만들고 이전 기록�
 - 코드 배치와 Docker 이미지 빌드 완료.
 - 운영 서버의 제한된 컨테이너에서 실제 게시판 5개 수집 확인: 공지사항 36개, 나머지 각 30개.
 - 수집 중 메모리 약 21.5MiB. CaLog·ChutChut·BabyLog 컨테이너 상태 유지 확인.
-- 비밀 파일은 권한 600으로 준비했으나 값은 아직 없습니다.
-- 봇 토큰과 공개 채널 ID가 없어 자동 실행과 실제 텔레그램 전송은 대기 중입니다.
-- 미리보기 컨테이너는 확인 후 자동 삭제되었습니다. 지속 실행 컨테이너는 아직 시작하지 않았습니다.
+- 로컬과 서버의 비밀 파일을 권한 600으로 설정했으며 봇 토큰과 채널 ID 연결 완료.
+- Telegram API로 봇 사용자명, 채널 종류, 메시지 게시 권한 확인 완료.
+- Lightsail에서 테스트 메시지 1개를 채널에 전송했고 Telegram API 성공 응답 확인.
+- `korvanbot-korvanbot-1` 지속 실행 컨테이너 시작 완료. 기본 10분 간격으로 확인합니다.
+- 첫 확인에서는 기존 게시글을 기준선으로 저장만 하고, 이후 감지한 새 글부터 게시합니다.
