@@ -127,9 +127,10 @@ def summarize_body(text, title, has_images=False):
 
 def format_message(name, title, date, summary, url):
     return (f'📢 <b>{html.escape(name)}</b>\n\n'
-            f'<b>{html.escape(title[:1800])}</b>\n{html.escape(date)}\n\n'
-            f'{html.escape(summary)}\n\n'
-            f'<a href="{html.escape(url, quote=True)}">원문 보기</a>')
+            f'<b>{html.escape(title[:1800])}</b>\n'
+            f'📅 <code>{html.escape(date)}</code>\n\n'
+            f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
+            f'🔗 <a href="{html.escape(url, quote=True)}">원문 보기</a>')
 
 
 def parse_rss(content):
