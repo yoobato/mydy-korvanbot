@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from monitor import BoardParser, DetailParser, cycle, database, deliver, format_date, format_message, parse_rss, remember, summarize_body
+from monitor import BoardParser, DetailParser, IssueReporter, cycle, database, deliver, format_date, format_message, parse_rss, remember, summarize_body
 
 BOARD = {"id": "m_4585", "name": "공지사항"}
 
@@ -136,6 +136,90 @@ class MonitorTests(unittest.TestCase):
             deliver(self.conn, messages.append, failed_detail)
         self.assertEqual(messages, [])
         self.assertEqual(self.conn.execute("SELECT sent FROM posts WHERE url=?", (post(2)["url"],)).fetchone()[0], 0)
+
+    def test_incident_survives_restart_and_recovers_once(self):
+        messages = []
+        reporter = IssueReporter(self.conn, messages.append)
+        reporter.update("board", "공지사항 <파싱>", ValueError("secret URL"))
+        self.conn.close()
+        self.conn = database(Path(self.temp.name) / "state.sqlite3")
+        reporter = IssueReporter(self.conn, messages.append)
+        reporter.update("board", "공지사항", ValueError())
+        self.assertEqual(len(messages), 1)
+        self.assertIn("&lt;파싱&gt;", messages[0])
+        self.assertNotIn("secret URL", messages[0])
+        reporter.update("board", "공지사항")
+        reporter.update("board", "공지사항")
+        self.assertEqual(len(messages), 2)
+        self.assertIn("복구", messages[-1])
+        reporter.update("board", "공지사항", ValueError())
+        self.assertEqual(len(messages), 3)
+
+    def test_failed_private_alert_and_recovery_are_retried(self):
+        messages = []
+        def unavailable(text):
+            raise RuntimeError("token should not be logged")
+        reporter = IssueReporter(self.conn, unavailable)
+        reporter.update("board", "공지사항", ValueError())
+        reporter.send = messages.append
+        reporter.update("board", "공지사항", ValueError())
+        self.assertEqual(len(messages), 1)
+        reporter.send = unavailable
+        reporter.update("board", "공지사항")
+        reporter.send = messages.append
+        reporter.retry_recoveries()
+        self.assertEqual(len(messages), 2)
+
+    @patch("monitor.time.sleep")
+    def test_bad_detail_does_not_block_other_posts_and_recovers(self, sleep):
+        remember(self.conn, BOARD, [post(1)])
+        remember(self.conn, BOARD, [post(2), post(3)])
+        public, private = [], []
+        reporter = IssueReporter(self.conn, private.append)
+        def sometimes_bad(url, title):
+            if url == post(2)["url"]:
+                raise ValueError()
+            return detail(url, title)
+        self.assertTrue(deliver(self.conn, public.append, sometimes_bad, reporter))
+        self.assertEqual(len(public), 1)
+        self.assertEqual(len(private), 1)
+        self.assertFalse(deliver(self.conn, public.append, detail, reporter))
+        self.assertEqual(len(public), 2)
+        self.assertEqual(len(private), 2)
+
+    @patch("monitor.time.sleep")
+    def test_channel_failure_alert_keeps_queue_and_recovers(self, sleep):
+        remember(self.conn, BOARD, [post(1)])
+        remember(self.conn, BOARD, [post(2)])
+        private = []
+        reporter = IssueReporter(self.conn, private.append)
+        def failed(text):
+            raise RuntimeError()
+        self.assertTrue(deliver(self.conn, failed, detail, reporter))
+        self.assertTrue(deliver(self.conn, failed, detail, reporter))
+        self.assertEqual(len(private), 1)
+        public = []
+        self.assertFalse(deliver(self.conn, public.append, detail, reporter))
+        self.assertEqual(len(public), 1)
+        self.assertEqual(len(private), 2)
+
+    def test_board_collection_alert_recovers_without_public_messages(self):
+        class FlakyCollector:
+            broken = True
+            def collect(self, board, pages):
+                if self.broken:
+                    raise ValueError()
+                return [post(1)]
+            detail = staticmethod(detail)
+        collector = FlakyCollector()
+        private, public = [], []
+        reporter = IssueReporter(self.conn, private.append)
+        config = {"boards": [BOARD], "pages": 3}
+        self.assertTrue(cycle(config, collector, self.conn, public.append, reporter))
+        collector.broken = False
+        self.assertFalse(cycle(config, collector, self.conn, public.append, reporter))
+        self.assertEqual(len(private), 2)
+        self.assertEqual(public, [])
 
 
 if __name__ == "__main__":

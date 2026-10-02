@@ -162,7 +162,8 @@ def parse_rss(content):
 
 
 class Collector:
-    def __init__(self):
+    def __init__(self, reporter=None):
+        self.reporter = reporter
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
@@ -178,8 +179,12 @@ class Collector:
             try:
                 for post in parse_rss(self.get(f'{BASE}/ca-vancouver-ko/brd/rss.do?brdId={board["rss_id"]}')):
                     posts[post["url"]] = post
+                if self.reporter:
+                    self.reporter.update(f'rss:{board["id"]}', f'{board["name"]} RSS')
             except Exception as exc:
                 LOG.warning("%s RSS unavailable (%s); reading lists", board["name"], type(exc).__name__)
+                if self.reporter:
+                    self.reporter.update(f'rss:{board["id"]}', f'{board["name"]} RSS (목록으로 대체 수집)', exc)
         for page in range(1, pages + 1):
             parser = BoardParser(board["id"])
             parser.feed(self.get(f'{BASE}/ca-vancouver-ko/brd/{board["id"]}/list.do?page={page}'))
@@ -204,6 +209,7 @@ def database(path):
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE IF NOT EXISTS boards (id TEXT PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS posts (url TEXT PRIMARY KEY, board TEXT, name TEXT, title TEXT, date TEXT, sent INTEGER)")
+    conn.execute("CREATE TABLE IF NOT EXISTS issues (key TEXT PRIMARY KEY, label TEXT, active INTEGER, notified INTEGER)")
     conn.commit()
     return conn
 
@@ -235,33 +241,101 @@ def telegram(token, channel, text):
         raise RuntimeError("Telegram rejected the message")
 
 
-def deliver(conn, send, get_detail):
+class IssueReporter:
+    """Persist incidents, retry failed alerts, and announce recovery once."""
+    def __init__(self, conn, send):
+        self.conn = conn
+        self.send = send
+
+    def update(self, key, label, error=None):
+        try:
+            row = self.conn.execute("SELECT label,active,notified FROM issues WHERE key=?", (key,)).fetchone()
+            if error is not None:
+                if row and row[1] and row[2]:
+                    return
+                with self.conn:
+                    self.conn.execute("INSERT OR REPLACE INTO issues VALUES (?,?,1,0)", (key, label))
+                message = (f'⚠️ <b>KoreaVancouverBot 장애 알림</b>\n\n{html.escape(label)}\n'
+                           f'오류 유형: <code>{html.escape(type(error).__name__)}</code>\n\n'
+                           '다음 확인 주기에 재시도합니다. 같은 장애의 반복 알림은 생략합니다.')
+                self.send(message)
+                with self.conn:
+                    self.conn.execute("UPDATE issues SET notified=1 WHERE key=?", (key,))
+            elif row and (row[1] or row[2]):
+                with self.conn:
+                    self.conn.execute("UPDATE issues SET active=0 WHERE key=?", (key,))
+                if row[2]:
+                    self.send(f'✅ <b>KoreaVancouverBot 복구 알림</b>\n\n{html.escape(row[0])}\n정상 동작을 확인했습니다.')
+                with self.conn:
+                    self.conn.execute("UPDATE issues SET active=0,notified=0 WHERE key=?", (key,))
+        except Exception as exc:
+            # Alert transport failure must not interrupt public post delivery.
+            LOG.error("Private issue alert failed (%s); retry on next check", type(exc).__name__)
+
+    def retry_recoveries(self):
+        for key, label in self.conn.execute("SELECT key,label FROM issues WHERE active=0 AND notified=1").fetchall():
+            self.update(key, label)
+
+
+def deliver(conn, send, get_detail, reporter=None):
+    failed = False
     for url, name, title, date in conn.execute("SELECT url,name,title,date FROM posts WHERE sent=0 ORDER BY rowid").fetchall():
-        detail = get_detail(url, title)
-        send(format_message(name, title, detail["date"] or date, detail["summary"], url))
+        try:
+            detail = get_detail(url, title)
+        except Exception as exc:
+            if reporter is None:
+                raise
+            failed = True
+            reporter.update(f'detail:{url}', f'{name} 원문 조회·파싱: {title[:200]}', exc)
+            LOG.error("Post detail failed (%s); queued post retained", type(exc).__name__)
+            continue
+        if reporter:
+            reporter.update(f'detail:{url}', f'{name} 원문 조회·파싱')
+        try:
+            send(format_message(name, title, detail["date"] or date, detail["summary"], url))
+        except Exception as exc:
+            if reporter is None:
+                raise
+            reporter.update('channel', '텔레그램 채널 전송 (미전송 글은 보관)', exc)
+            LOG.error("Channel delivery failed (%s); queued posts retained", type(exc).__name__)
+            return True
+        if reporter:
+            reporter.update('channel', '텔레그램 채널 전송')
         with conn:
             conn.execute("UPDATE posts SET sent=1 WHERE url=?", (url,))
         LOG.info("Published: %s", title)
         time.sleep(1.1)
+    return failed
 
 
-def cycle(config, collector, conn, send):
+def cycle(config, collector, conn, send, reporter=None):
     failed = False
+    if reporter:
+        reporter.retry_recoveries()
     for board in config["boards"]:
         if not board.get("enabled", True):
             continue
         try:
             posts = collector.collect(board, config["pages"])
             initialized = remember(conn, board, posts)
+            if reporter:
+                reporter.update(f'board:{board["id"]}', f'{board["name"]} 수집·파싱')
             LOG.info("%s: %d posts (%s)", board["name"], len(posts), "checked" if initialized else "baseline saved, no history sent")
         except Exception as exc:
             failed = True
             LOG.error("%s: collection failed (%s); state retained", board["name"], type(exc).__name__)
+            if reporter:
+                reporter.update(f'board:{board["id"]}', f'{board["name"]} 수집·파싱', exc)
     try:
-        deliver(conn, send, collector.detail)
+        failed = deliver(conn, send, collector.detail, reporter) or failed
     except Exception as exc:
         failed = True
         LOG.error("Delivery failed (%s); queued posts retained", type(exc).__name__)
+        if reporter:
+            reporter.update('worker', '알림 처리', exc)
+    else:
+        if reporter:
+            reporter.update('worker', '알림 처리')
     return failed
 
 
@@ -273,7 +347,6 @@ def main():
     config = json.loads(args.config.read_text())
     if config["pages"] < 1 or config["interval_seconds"] < 60:
         parser.error("pages must be positive and interval_seconds >= 60")
-    collector = Collector()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     channel = os.environ.get("TELEGRAM_CHANNEL_ID")
     if not token or not channel:
@@ -287,9 +360,17 @@ def main():
         except BlockingIOError:
             parser.error("Another monitor is already using this state database")
         conn = database(state)
+        admin = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
+        reporter = IssueReporter(conn, lambda text: telegram(token, admin, text)) if admin else None
+        collector = Collector(reporter)
         try:
             while True:
-                cycle(config, collector, conn, send)
+                try:
+                    cycle(config, collector, conn, send, reporter)
+                except Exception as exc:
+                    LOG.error("Monitor cycle failed (%s)", type(exc).__name__)
+                    if reporter:
+                        reporter.update('worker', '모니터링 처리', exc)
                 time.sleep(config["interval_seconds"])
         finally:
             conn.close()
