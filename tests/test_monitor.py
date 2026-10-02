@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from monitor import BoardParser, DetailParser, cycle, database, deliver, format_message, parse_rss, remember, summarize_body
+from monitor import BoardParser, DetailParser, cycle, database, deliver, format_date, format_message, parse_rss, remember, summarize_body
 
 BOARD = {"id": "m_4585", "name": "공지사항"}
 
@@ -111,6 +111,12 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("문의 &amp; 접수", message)
         self.assertNotIn("총영사관", message)
         self.assertNotIn("테스트", message)
+
+    def test_date_uses_korean_weekday_and_preserves_unrecognized_values(self):
+        self.assertEqual(format_date("2026-05-21"), "2026년 5월 21일 (목)")
+        self.assertEqual(format_date("2026-10-02"), "2026년 10월 2일 (금)")
+        self.assertEqual(format_date("날짜 미상"), "날짜 미상")
+        self.assertEqual(format_date("2026-02-30"), "2026-02-30")
 
     def test_detail_failure_preserves_pending_post(self):
         remember(self.conn, BOARD, [post(1)])

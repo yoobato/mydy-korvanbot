@@ -1,5 +1,6 @@
 """Consulate boards → a Telegram channel. Python 3.11+, no dependencies."""
 import argparse
+from datetime import datetime
 import fcntl
 import html
 import http.cookiejar
@@ -125,10 +126,18 @@ def summarize_body(text, title, has_images=False):
     return excerpt[:319].rstrip() + "…"
 
 
+def format_date(value):
+    try:
+        day = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return value
+    return f'{day.year}년 {day.month}월 {day.day}일 ({"월화수목금토일"[day.weekday()]})'
+
+
 def format_message(name, title, date, summary, url):
-    return (f'📢 <b>{html.escape(name)}</b>\n\n'
+    return (f'🔔 <b>{html.escape(name)}</b>\n\n'
             f'<b>{html.escape(title[:1800])}</b>\n'
-            f'📅 <code>{html.escape(date)}</code>\n\n'
+            f'📅 <i>{html.escape(format_date(date))}</i>\n\n'
             f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
             f'🔗 <a href="{html.escape(url, quote=True)}">원문 보기</a>')
 
