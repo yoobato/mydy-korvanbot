@@ -6,10 +6,13 @@
 
 ## 모니터링 게시판
 
-- 공지사항
-- 순회영사
-- 해외여행안전정보
-- 동포/지역한인회 소식
+- [공지사항](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_4585/list.do)
+- [순회영사](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_20174/list.do)
+- [해외여행안전정보](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_27536/list.do)
+- [동포/지역한인회 소식](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_24795/list.do)
+
+자료 출처는 모두 [주밴쿠버 대한민국 총영사관 공식 홈페이지](https://www.mofa.go.kr/ca-vancouver-ko/index.do)입니다.
+공지사항은 [공식 RSS](https://www.mofa.go.kr/ca-vancouver-ko/brd/rss.do?brdId=4004)도 함께 확인합니다.
 
 모니터링 대상과 확인 주기는 `boards.json`에서 설정합니다.
 
