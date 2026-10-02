@@ -113,8 +113,9 @@ class MonitorTests(unittest.TestCase):
         self.assertNotIn("테스트", message)
 
     def test_date_uses_korean_weekday_and_preserves_unrecognized_values(self):
-        self.assertEqual(format_date("2026-05-21"), "2026년 5월 21일 (목)")
-        self.assertEqual(format_date("2026-10-02"), "2026년 10월 2일 (금)")
+        self.assertEqual(format_date("2026-05-21"), "2026-05-21 (목)")
+        self.assertEqual(format_date("2026-10-02"), "2026-10-02 (금)")
+        self.assertEqual(format_date("2026-09-30"), "2026-09-30 (수)")
         self.assertEqual(format_date("날짜 미상"), "날짜 미상")
         self.assertEqual(format_date("2026-02-30"), "2026-02-30")
 
@@ -123,7 +124,8 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("안내입니다.\n신청해 주세요.", summary)
         self.assertIn("10:00\n\n- 장소", summary)
         message = format_message("순회영사", "접수 안내", "2026-05-21", summary, post(1)["url"])
-        self.assertTrue(message.startswith('🔔 <b>순회영사</b>\n\n📅 <code>2026년 5월 21일 (목)</code>\n\n<b>접수 안내</b>\n\n<blockquote>'))
+        self.assertTrue(message.startswith('🔔 <b>순회영사</b>\n\n📅 2026-05-21 (목)\n\n📝 <b>접수 안내</b>\n\n<blockquote>'))
+        self.assertNotIn("<code>", message)
         self.assertNotIn("<i>", message)
 
     def test_detail_failure_preserves_pending_post(self):

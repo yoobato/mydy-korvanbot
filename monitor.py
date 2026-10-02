@@ -131,13 +131,13 @@ def format_date(value):
         day = datetime.strptime(value, "%Y-%m-%d")
     except ValueError:
         return value
-    return f'{day.year}년 {day.month}월 {day.day}일 ({"월화수목금토일"[day.weekday()]})'
+    return f'{day:%Y-%m-%d} ({"월화수목금토일"[day.weekday()]})'
 
 
 def format_message(name, title, date, summary, url):
     return (f'🔔 <b>{html.escape(name)}</b>\n\n'
-            f'📅 <code>{html.escape(format_date(date))}</code>\n\n'
-            f'<b>{html.escape(title[:1800])}</b>\n\n'
+            f'📅 {html.escape(format_date(date))}\n\n'
+            f'📝 <b>{html.escape(title[:1800])}</b>\n\n'
             f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
             f'🔗 <a href="{html.escape(url, quote=True)}">원문 보기</a>')
 
