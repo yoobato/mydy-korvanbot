@@ -1,5 +1,5 @@
 {
-  "interval_seconds": 600,
+  "interval_seconds": 3600,
   "pages": 3,
   "boards": [
     {"id": "m_4585", "name": "공지사항", "rss_id": 4004},

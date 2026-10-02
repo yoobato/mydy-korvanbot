@@ -267,7 +267,6 @@ def cycle(config, collector, conn, send):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["preview", "once", "run", "test-message"])
     parser.add_argument("--config", type=Path, default=ROOT / "boards.json")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -275,21 +274,11 @@ def main():
     if config["pages"] < 1 or config["interval_seconds"] < 60:
         parser.error("pages must be positive and interval_seconds >= 60")
     collector = Collector()
-    if args.command == "preview":
-        # Preview does not create a database or send Telegram messages.
-        for board in config["boards"]:
-            if board.get("enabled", True):
-                posts = collector.collect(board, config["pages"])
-                print(json.dumps({"board": board["name"], "count": len(posts), "latest": posts[-3:]}, ensure_ascii=False, indent=2))
-        return
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     channel = os.environ.get("TELEGRAM_CHANNEL_ID")
     if not token or not channel:
         parser.error("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID in the external secrets file")
     send = lambda text: telegram(token, channel, text)
-    if args.command == "test-message":
-        send("✅ 영사 소식 알림 연결 테스트입니다. 개인이 운영하는 비공식 알림 서비스입니다.")
-        return
     state = Path(os.environ.get("STATE_PATH", str(ROOT / "data" / "state.sqlite3")))
     state.parent.mkdir(parents=True, exist_ok=True)
     with state.with_suffix(".lock").open("w") as lock:
@@ -300,9 +289,7 @@ def main():
         conn = database(state)
         try:
             while True:
-                failed = cycle(config, collector, conn, send)
-                if args.command == "once":
-                    raise SystemExit(1 if failed else 0)
+                cycle(config, collector, conn, send)
                 time.sleep(config["interval_seconds"])
         finally:
             conn.close()
