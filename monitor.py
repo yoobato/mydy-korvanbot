@@ -1,0 +1,218 @@
+"""Consulate boards → a Telegram channel. Python 3.11+, no dependencies."""
+import argparse
+import fcntl
+import html
+import http.cookiejar
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import sqlite3
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+
+ROOT = Path(__file__).resolve().parent
+BASE = "https://www.mofa.go.kr"
+LOG = logging.getLogger("consulate-alerts")
+
+
+class BoardParser(HTMLParser):
+    def __init__(self, board):
+        super().__init__()
+        self.board = board
+        self.posts = []
+        self.row = None
+        self.anchor = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "tr":
+            self.row = {"seq": None, "title": [], "text": []}
+        if tag == "a" and self.row is not None:
+            match = re.search(r"f_view\(['\"](\d+)['\"]", attrs.get("onclick", ""))
+            if match:
+                self.row["seq"] = match[1]
+                self.anchor = True
+
+    def handle_data(self, data):
+        if self.row is not None:
+            self.row["text"].append(data)
+            if self.anchor:
+                self.row["title"].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self.anchor = False
+        if tag == "tr" and self.row is not None:
+            row = self.row
+            title = " ".join("".join(row["title"]).split())
+            date = re.search(r"\d{4}-\d{2}-\d{2}", "".join(row["text"]))
+            if row["seq"] and title and date:
+                self.posts.append({"title": title, "date": date[0],
+                    "url": f'{BASE}/ca-vancouver-ko/brd/{self.board}/view.do?seq={row["seq"]}'})
+            self.row = None
+
+
+def parse_rss(content):
+    root = ET.fromstring(content)
+    if root.tag != "rss":
+        raise ValueError("Expected an RSS document")
+    posts = []
+    for item in root.findall("./channel/item"):
+        url = urllib.parse.urlsplit(item.findtext("link", ""))
+        # The official feed emits http://www.mofa.go.kr:443 links.
+        if not url.path.startswith("/ca-vancouver-ko/brd/"):
+            continue
+        title = " ".join(item.findtext("title", "").split())
+        if title and "seq" in urllib.parse.parse_qs(url.query):
+            posts.append({"title": title, "date": item.findtext("pubDate", ""),
+                "url": urllib.parse.urlunsplit(("https", "www.mofa.go.kr", url.path, url.query, ""))})
+    if not posts:
+        raise ValueError("Feed has no recognizable posts")
+    return posts
+
+
+class Collector:
+    def __init__(self):
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def get(self, url):
+        request = urllib.request.Request(url, headers={"User-Agent": "ConsulateAlerts/1.0"})
+        with self.opener.open(request, timeout=25) as response:
+            return response.read().decode("utf-8-sig")
+
+    def collect(self, board, pages):
+        # Lists are also read to cover pinned posts and items outside the RSS window.
+        posts = {}
+        if board.get("rss_id"):
+            try:
+                for post in parse_rss(self.get(f'{BASE}/ca-vancouver-ko/brd/rss.do?brdId={board["rss_id"]}')):
+                    posts[post["url"]] = post
+            except Exception as exc:
+                LOG.warning("%s RSS unavailable (%s); reading lists", board["name"], type(exc).__name__)
+        for page in range(1, pages + 1):
+            parser = BoardParser(board["id"])
+            parser.feed(self.get(f'{BASE}/ca-vancouver-ko/brd/{board["id"]}/list.do?page={page}'))
+            if not parser.posts:
+                raise ValueError("List has no recognizable posts; refusing to update state")
+            for post in parser.posts:
+                posts[post["url"]] = post
+        return sorted(posts.values(), key=lambda p: int(urllib.parse.parse_qs(urllib.parse.urlsplit(p["url"]).query)["seq"][0]))
+
+
+def database(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE IF NOT EXISTS boards (id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE IF NOT EXISTS posts (url TEXT PRIMARY KEY, board TEXT, name TEXT, title TEXT, date TEXT, sent INTEGER)")
+    conn.commit()
+    return conn
+
+
+def remember(conn, board, posts):
+    initialized = conn.execute("SELECT 1 FROM boards WHERE id=?", (board["id"],)).fetchone()
+    with conn:
+        for post in posts:
+            conn.execute("INSERT OR IGNORE INTO posts VALUES (?,?,?,?,?,?)",
+                (post["url"], board["id"], board["name"], post["title"], post["date"], 0 if initialized else 1))
+        conn.execute("INSERT OR IGNORE INTO boards VALUES (?)", (board["id"],))
+    return bool(initialized)
+
+
+def telegram(token, channel, text):
+    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps({"chat_id": channel, "text": text, "parse_mode": "HTML",
+                         "link_preview_options": {"is_disabled": True}}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        # Do not log the exception URL: it contains the bot token.
+        raise RuntimeError(f"Telegram HTTP {exc.code}; check channel permissions, token, and rate limits") from None
+    except Exception:
+        raise RuntimeError("Telegram network error; delivery outcome uncertain") from None
+    if not result.get("ok"):
+        raise RuntimeError("Telegram rejected the message")
+
+
+def deliver(conn, send):
+    for url, name, title, date in conn.execute("SELECT url,name,title,date FROM posts WHERE sent=0 ORDER BY rowid").fetchall():
+        send(f'📢 <b>주밴쿠버 총영사관 · {html.escape(name)}</b>\n\n{html.escape(title[:2500])}\n{html.escape(date)}\n\n<a href="{html.escape(url, quote=True)}">원문 보기</a>')
+        with conn:
+            conn.execute("UPDATE posts SET sent=1 WHERE url=?", (url,))
+        LOG.info("Published: %s", title)
+        time.sleep(1.1)
+
+
+def cycle(config, collector, conn, send):
+    failed = False
+    for board in config["boards"]:
+        if not board.get("enabled", True):
+            continue
+        try:
+            posts = collector.collect(board, config["pages"])
+            initialized = remember(conn, board, posts)
+            LOG.info("%s: %d posts (%s)", board["name"], len(posts), "checked" if initialized else "baseline saved, no history sent")
+        except Exception as exc:
+            failed = True
+            LOG.error("%s: collection failed (%s); state retained", board["name"], type(exc).__name__)
+    try:
+        deliver(conn, send)
+    except Exception as exc:
+        failed = True
+        LOG.error("Delivery failed (%s); queued posts retained", type(exc).__name__)
+    return failed
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=["preview", "once", "run", "test-message"])
+    parser.add_argument("--config", type=Path, default=ROOT / "boards.json")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = json.loads(args.config.read_text())
+    if config["pages"] < 1 or config["interval_seconds"] < 60:
+        parser.error("pages must be positive and interval_seconds >= 60")
+    collector = Collector()
+    if args.command == "preview":
+        # Preview does not create a database or send Telegram messages.
+        for board in config["boards"]:
+            if board.get("enabled", True):
+                posts = collector.collect(board, config["pages"])
+                print(json.dumps({"board": board["name"], "count": len(posts), "latest": posts[-3:]}, ensure_ascii=False, indent=2))
+        return
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    channel = os.environ.get("TELEGRAM_CHANNEL_ID")
+    if not token or not channel:
+        parser.error("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID in the external secrets file")
+    send = lambda text: telegram(token, channel, text)
+    if args.command == "test-message":
+        send("✅ 영사 소식 알림 연결 테스트입니다. 개인이 운영하는 비공식 알림 서비스입니다.")
+        return
+    state = Path(os.environ.get("STATE_PATH", str(ROOT / "data" / "state.sqlite3")))
+    state.parent.mkdir(parents=True, exist_ok=True)
+    with state.with_suffix(".lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            parser.error("Another monitor is already using this state database")
+        conn = database(state)
+        try:
+            while True:
+                failed = cycle(config, collector, conn, send)
+                if args.command == "once":
+                    raise SystemExit(1 if failed else 0)
+                time.sleep(config["interval_seconds"])
+        finally:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()
