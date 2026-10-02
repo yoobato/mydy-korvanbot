@@ -115,12 +115,12 @@ def summarize_body(text, title, has_images=False):
     paragraphs = [" ".join(p.replace("\u200b", "").replace("\ufeff", "").split()) for p in text.splitlines()]
     paragraphs = [p for p in paragraphs if p and p != title and not p.startswith(("(사진", "사진제공", "사진 제공"))]
     if not paragraphs:
-        return "본문이 이미지로 게시되어 있습니다. 자세한 내용은 원문 이미지를 확인해 주세요." if has_images else "본문에 텍스트가 없습니다. 자세한 내용은 원문을 확인해 주세요."
+        return "본문이 이미지로 게시되어 있습니다.\n자세한 내용은 원문 이미지를 확인해 주세요." if has_images else "본문에 텍스트가 없습니다.\n자세한 내용은 원문을 확인해 주세요."
     # Prefer explicit schedule/application lines, preserving their original text.
     labels = r"(?:일시|일자|장소|신청\s*기간|접수\s*기간|예약\s*기간|온라인\s*예약|마감)\s*[:：]"
     important = [p for p in paragraphs[1:] if re.search(labels, p)]
     selected = [paragraphs[0]] + important[:3] if important else paragraphs[:2]
-    excerpt = "\n".join(selected)
+    excerpt = "\n\n".join(re.sub(r"(?<=[.!?])\s+(?=[가-힣])", "\n", p) for p in selected)
     if len(excerpt) <= 320:
         return excerpt
     return excerpt[:319].rstrip() + "…"
@@ -136,8 +136,8 @@ def format_date(value):
 
 def format_message(name, title, date, summary, url):
     return (f'🔔 <b>{html.escape(name)}</b>\n\n'
-            f'<b>{html.escape(title[:1800])}</b>\n'
-            f'📅 <i>{html.escape(format_date(date))}</i>\n\n'
+            f'📅 <code>{html.escape(format_date(date))}</code>\n\n'
+            f'<b>{html.escape(title[:1800])}</b>\n\n'
             f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
             f'🔗 <a href="{html.escape(url, quote=True)}">원문 보기</a>')
 

@@ -118,6 +118,14 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(format_date("날짜 미상"), "날짜 미상")
         self.assertEqual(format_date("2026-02-30"), "2026-02-30")
 
+    def test_notification_spacing_and_summary_breaks(self):
+        summary = summarize_body("접수 안내입니다. 신청해 주세요.\n- 일시 : 2026.6.26 10:00\n- 장소 : 행사장", "안내")
+        self.assertIn("안내입니다.\n신청해 주세요.", summary)
+        self.assertIn("10:00\n\n- 장소", summary)
+        message = format_message("순회영사", "접수 안내", "2026-05-21", summary, post(1)["url"])
+        self.assertTrue(message.startswith('🔔 <b>순회영사</b>\n\n📅 <code>2026년 5월 21일 (목)</code>\n\n<b>접수 안내</b>\n\n<blockquote>'))
+        self.assertNotIn("<i>", message)
+
     def test_detail_failure_preserves_pending_post(self):
         remember(self.conn, BOARD, [post(1)])
         remember(self.conn, BOARD, [post(2)])
