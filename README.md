@@ -62,7 +62,7 @@
 `site/`의 정적 소개 페이지를 GitHub Actions로 GitHub Pages에 배포합니다. `main`에서 소개 페이지나 배포 설정이 바뀌면 자동 배포합니다. 텔레그램 수집 워커는 기존 서버에서 별도로 실행됩니다.
 
 - 기본 주소: https://yoobato.github.io/mydy-korvanbot/
-- 연결 예정 도메인: `korvan.mydy.kr` — DNS에 `korvan` CNAME을 `yoobato.github.io`로 연결한 뒤 GitHub Pages의 Custom domain과 HTTPS를 설정합니다.
+- 연결 예정 도메인: `korvanbot.mydy.kr` — DNS에 `korvanbot` CNAME을 `yoobato.github.io`로 연결한 뒤 GitHub Pages의 Custom domain과 HTTPS를 설정합니다.
 
 ## 장애 알림
 
