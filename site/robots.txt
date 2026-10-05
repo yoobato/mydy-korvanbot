@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://korvanbot.mydy.kr/sitemap.xml

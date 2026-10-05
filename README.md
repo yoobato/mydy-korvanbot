@@ -64,6 +64,7 @@
 `site/`의 정적 소개 페이지를 GitHub Actions로 GitHub Pages에 배포합니다. `main`에서 소개 페이지나 배포 설정이 바뀌면 자동 배포합니다. 텔레그램 수집 워커는 기존 서버에서 별도로 실행됩니다.
 
 - 소개 페이지: https://korvanbot.mydy.kr/
+- 검색용 제목·설명, 대표 URL, WebSite/WebPage 구조화 데이터와 `robots.txt`·`sitemap.xml`을 제공합니다. 링크 공유에는 `og.png`(1200×630)와 Open Graph·X 카드 메타데이터를 사용합니다. 페이지 내용 수정 시 사이트맵의 `lastmod`도 갱신합니다.
 - `korvanbot` CNAME은 `yoobato.github.io`로 연결하며, GitHub Pages의 Custom domain으로 등록합니다. 도메인 설정은 GitHub Pages에서 관리하며, Actions 배포에는 `CNAME` 파일이 필요하지 않습니다.
 
 ## 장애 알림
