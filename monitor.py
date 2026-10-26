@@ -9,7 +9,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -161,6 +163,24 @@ def parse_rss(content):
     return posts
 
 
+def error_description(error):
+    """Describe network failures without exposing URLs, credentials or response bodies."""
+    reason = error.reason if isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "SSL 인증서 확인 실패"
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "연결 시간 초과 (25초)"
+    if isinstance(reason, socket.gaierror):
+        return "DNS 조회 실패"
+    if isinstance(reason, ssl.SSLError):
+        return "TLS 연결 실패"
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code}"
+    if isinstance(error, urllib.error.URLError):
+        return "네트워크 연결 실패"
+    return type(error).__name__
+
+
 class Collector:
     def __init__(self, reporter=None):
         self.reporter = reporter
@@ -169,8 +189,20 @@ class Collector:
 
     def get(self, url):
         request = urllib.request.Request(url, headers={"User-Agent": "ConsulateAlerts/1.0"})
-        with self.opener.open(request, timeout=25) as response:
-            return response.read().decode("utf-8-sig")
+        for attempt in range(3):
+            try:
+                with self.opener.open(request, timeout=25) as response:
+                    return response.read().decode("utf-8-sig")
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                reason = exc.reason if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError) else exc
+                retryable = not isinstance(reason, ssl.SSLCertVerificationError)
+                if isinstance(exc, urllib.error.HTTPError):
+                    retryable = exc.code in {429, 500, 502, 503, 504}
+                if not retryable or attempt == 2:
+                    LOG.error("Official site request failed: %s", error_description(exc))
+                    raise
+                LOG.warning("Official site request retry %d/2: %s", attempt + 1, error_description(exc))
+                time.sleep(2 ** attempt)
 
     def collect(self, board, pages):
         # Lists are also read to cover pinned posts and items outside the RSS window.
@@ -256,7 +288,7 @@ class IssueReporter:
                 with self.conn:
                     self.conn.execute("INSERT OR REPLACE INTO issues VALUES (?,?,1,0)", (key, label))
                 message = (f'⚠️ <b>KoreaVancouverBot 장애 알림</b>\n\n{html.escape(label)}\n'
-                           f'오류 유형: <code>{html.escape(type(error).__name__)}</code>\n\n'
+                           f'오류 유형: <code>{html.escape(error_description(error))}</code>\n\n'
                            '다음 확인 주기에 재시도합니다. 같은 장애의 반복 알림은 생략합니다.')
                 self.send(message)
                 with self.conn:

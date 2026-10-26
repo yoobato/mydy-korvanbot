@@ -1,9 +1,12 @@
 import tempfile
 import unittest
+import urllib.error
+import ssl
+import socket
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from monitor import BoardParser, DetailParser, IssueReporter, cycle, database, deliver, format_date, format_message, parse_rss, remember, summarize_body
+from monitor import BoardParser, Collector, DetailParser, IssueReporter, cycle, database, deliver, error_description, format_date, format_message, parse_rss, remember, summarize_body
 
 BOARD = {"id": "m_4585", "name": "공지사항"}
 
@@ -25,6 +28,43 @@ class MonitorTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
         self.temp.cleanup()
+
+    @patch("monitor.time.sleep")
+    def test_transient_site_timeout_recovers_before_reporting_issue(self, sleep):
+        collector = Collector()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = '정상 응답'.encode()
+        collector.opener = MagicMock()
+        collector.opener.open.side_effect = [urllib.error.URLError(TimeoutError()), response]
+        self.assertEqual(collector.get(post(1)["url"]), '정상 응답')
+        self.assertEqual(collector.opener.open.call_count, 2)
+
+    @patch("monitor.time.sleep")
+    def test_persistent_timeout_has_bounded_retries_and_safe_private_diagnostic(self, sleep):
+        collector = Collector()
+        collector.opener = MagicMock()
+        collector.opener.open.side_effect = urllib.error.URLError(TimeoutError('secret value'))
+        with self.assertRaises(urllib.error.URLError) as failed:
+            collector.get(post(1)["url"])
+        self.assertEqual(collector.opener.open.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        messages = []
+        IssueReporter(self.conn, messages.append).update('network-test', '공지사항 수집', failed.exception)
+        self.assertIn('연결 시간 초과', messages[0])
+        self.assertNotIn('secret value', messages[0])
+
+    @patch("monitor.time.sleep")
+    def test_certificate_and_permanent_http_failures_are_not_retried(self, sleep):
+        for error in (urllib.error.URLError(ssl.SSLCertVerificationError('certificate problem')),
+                      urllib.error.HTTPError(post(1)["url"], 404, 'missing', {}, None)):
+            collector = Collector()
+            collector.opener = MagicMock()
+            collector.opener.open.side_effect = error
+            with self.assertRaises(urllib.error.URLError):
+                collector.get(post(1)["url"])
+            self.assertEqual(collector.opener.open.call_count, 1)
+        sleep.assert_not_called()
+        self.assertEqual(error_description(urllib.error.URLError(socket.gaierror())), 'DNS 조회 실패')
 
     def test_actual_site_onclick_and_pinned_row(self):
         parser = BoardParser("m_4585")
