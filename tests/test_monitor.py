@@ -6,7 +6,7 @@ import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from monitor import BoardParser, Collector, DetailParser, IssueReporter, cycle, database, deliver, error_description, format_date, format_message, parse_rss, remember, summarize_body
+from monitor import BoardParser, Collector, DetailParser, IssueReporter, SiteFailure, cycle, database, deliver, error_description, format_date, format_message, parse_rss, remember, summarize_body
 
 BOARD = {"id": "m_4585", "name": "공지사항"}
 
@@ -46,8 +46,8 @@ class MonitorTests(unittest.TestCase):
         collector.opener.open.side_effect = urllib.error.URLError(TimeoutError('secret value'))
         with self.assertRaises(urllib.error.URLError) as failed:
             collector.get(post(1)["url"])
-        self.assertEqual(collector.opener.open.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(collector.opener.open.call_count, 6)
+        self.assertEqual(sleep.call_count, 4)
         messages = []
         IssueReporter(self.conn, messages.append).update('network-test', '공지사항 수집', failed.exception)
         self.assertIn('연결 시간 초과', messages[0])
@@ -62,9 +62,77 @@ class MonitorTests(unittest.TestCase):
             collector.opener.open.side_effect = error
             with self.assertRaises(urllib.error.URLError):
                 collector.get(post(1)["url"])
-            self.assertEqual(collector.opener.open.call_count, 1)
+            self.assertEqual(collector.opener.open.call_count, 2)
         sleep.assert_not_called()
         self.assertEqual(error_description(urllib.error.URLError(socket.gaierror())), 'DNS 조회 실패')
+
+    def test_primary_then_backup_on_connection_failure(self):
+        collector = Collector()
+        collector._get_origin = MagicMock(side_effect=[urllib.error.URLError(TimeoutError()), 'backup response'])
+        self.assertEqual(collector.get(post(1)['url']), 'backup response')
+        urls = [call.args[0] for call in collector._get_origin.call_args_list]
+        self.assertEqual(urls, [post(1)['url'].replace('www.', 'overseas.'), post(1)['url']])
+        collector._get_origin = MagicMock(return_value='primary response')
+        self.assertEqual(collector.get(post(1)['url']), 'primary response')
+        collector._get_origin.assert_called_once_with(post(1)['url'].replace('www.', 'overseas.'))
+
+    @patch('monitor.time.sleep')
+    def test_invalid_primary_list_falls_back_without_changing_post_identity(self, sleep):
+        content = '''<table><tr><td><a onclick="f_view('1');">기존 글</a></td><td>2026-10-01</td></tr>
+        <tr><td><a onclick="f_view('2');">새 글</a></td><td>2026-10-02</td></tr></table>'''
+        collector = Collector()
+        collector._get_origin = MagicMock(side_effect=['<html>점검 중</html>', content, content])
+        remember(self.conn, BOARD, [post(1)])
+        messages = []
+        for _ in range(2):
+            remember(self.conn, BOARD, collector.collect(BOARD, 1))
+            deliver(self.conn, messages.append, detail)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM posts').fetchone()[0], 2)
+        self.assertEqual([row[0] for row in self.conn.execute('SELECT url FROM posts ORDER BY url')],
+                         [post(1)['url'], post(2)['url']])
+
+    def test_detail_structure_error_falls_back_and_both_failures_are_explained(self):
+        collector = Collector()
+        collector._get_origin = MagicMock(side_effect=['<html>점검 중</html>', '<div class="bo_con">본문입니다.</div>'])
+        self.assertEqual(collector.detail(post(1)['url'], '제목')['summary'], '본문입니다.')
+        collector._get_origin = MagicMock(return_value='<html>점검 중</html>')
+        with self.assertRaises(SiteFailure) as failure:
+            collector.detail(post(1)['url'], '제목')
+        messages = []
+        IssueReporter(self.conn, messages.append).update('detail-test', '공지사항 원문', failure.exception)
+        self.assertIn('.bo_con', messages[0])
+        self.assertIn('overseas.mofa.go.kr', messages[0])
+        self.assertIn('www.mofa.go.kr', messages[0])
+
+    def test_unrecognizable_list_explains_page_and_preserves_state(self):
+        collector = Collector()
+        collector._get_origin = MagicMock(return_value='<html>점검 중</html>')
+        messages = []
+        self.assertTrue(cycle({'boards': [BOARD], 'pages': 3}, collector, self.conn, lambda text: None,
+                              IssueReporter(self.conn, messages.append)))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM boards').fetchone()[0], 0)
+        self.assertIn('목록 1페이지', messages[0])
+        self.assertIn('글번호(f_view)', messages[0])
+        self.assertIn('제목·작성일', messages[0])
+
+    def test_malformed_rss_uses_backup_and_preserves_canonical_identity(self):
+        collector = Collector()
+        rss = '''<rss><channel><item><title>제목</title><link>https://overseas.mofa.go.kr/ca-vancouver-ko/brd/m_4585/view.do?seq=1</link></item></channel></rss>'''
+        collector._get_origin = MagicMock(side_effect=['<html>broken', rss])
+        posts = collector.get('https://www.mofa.go.kr/ca-vancouver-ko/brd/rss.do?brdId=4004', parse_rss)
+        self.assertEqual(posts[0]['url'], post(1)['url'])
+
+    def test_failed_rss_on_both_domains_does_not_block_html_collection(self):
+        private = []
+        collector = Collector(IssueReporter(self.conn, private.append))
+        collector._get_origin = MagicMock(side_effect=['<html>broken', '<html>broken',
+            '''<table><tr><td><a onclick="f_view('1');">제목</a></td><td>2026-10-01</td></tr></table>'''])
+        posts = collector.collect({**BOARD, 'rss_id': 4004}, 1)
+        self.assertEqual(posts[0]['url'], post(1)['url'])
+        self.assertEqual(len(private), 1)
+        self.assertIn('RSS XML', private[0])
+        self.assertIn('줄 1', private[0])
 
     def test_actual_site_onclick_and_pinned_row(self):
         parser = BoardParser("m_4585")

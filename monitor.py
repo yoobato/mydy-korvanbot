@@ -21,7 +21,22 @@ from html.parser import HTMLParser
 
 ROOT = Path(__file__).resolve().parent
 BASE = "https://www.mofa.go.kr"
+SITE_ORIGINS = ("https://overseas.mofa.go.kr", BASE)
 LOG = logging.getLogger("consulate-alerts")
+
+
+class ParseFailure(ValueError):
+    """A controlled, safe description of an unexpected official-site response."""
+
+
+class SiteFailure(urllib.error.URLError):
+    def __init__(self, failures):
+        self.failures = failures
+        super().__init__("All official site origins failed")
+
+
+class TelegramFailure(RuntimeError):
+    """A controlled Telegram diagnostic that never contains the token."""
 
 
 class BoardParser(HTMLParser):
@@ -145,9 +160,13 @@ def format_message(name, title, date, summary, url):
 
 
 def parse_rss(content):
-    root = ET.fromstring(content)
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        line, column = exc.position
+        raise ParseFailure(f"RSS XML을 해석할 수 없습니다 (줄 {line}, 위치 {column}). 오류 페이지 또는 잘못된 XML 응답일 수 있습니다.") from None
     if root.tag != "rss":
-        raise ValueError("Expected an RSS document")
+        raise ParseFailure("RSS 문서의 rss 요소가 없습니다. XML 대신 다른 페이지가 반환됐습니다.")
     posts = []
     for item in root.findall("./channel/item"):
         url = urllib.parse.urlsplit(item.findtext("link", ""))
@@ -159,12 +178,16 @@ def parse_rss(content):
             posts.append({"title": title, "date": item.findtext("pubDate", ""),
                 "url": urllib.parse.urlunsplit(("https", "www.mofa.go.kr", url.path, url.query, ""))})
     if not posts:
-        raise ValueError("Feed has no recognizable posts")
+        raise ParseFailure("RSS에서 제목과 글번호(seq)가 있는 게시글을 찾지 못했습니다.")
     return posts
 
 
 def error_description(error):
     """Describe network failures without exposing URLs, credentials or response bodies."""
+    if isinstance(error, SiteFailure):
+        return "기본·백업 주소 모두 실패했습니다.\n" + "\n".join(f"{url}\n{reason}" for url, reason in error.failures)
+    if isinstance(error, (ParseFailure, TelegramFailure)):
+        return str(error)
     reason = error.reason if isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError) else error
     if isinstance(reason, ssl.SSLCertVerificationError):
         return "SSL 인증서 확인 실패"
@@ -174,6 +197,12 @@ def error_description(error):
         return "DNS 조회 실패"
     if isinstance(reason, ssl.SSLError):
         return "TLS 연결 실패"
+    if isinstance(reason, ConnectionRefusedError):
+        return "서버가 연결을 거부했습니다."
+    if isinstance(reason, ConnectionError):
+        return "서버와의 연결이 끊겼습니다."
+    if isinstance(error, UnicodeDecodeError):
+        return "응답을 UTF-8 텍스트로 해석할 수 없습니다."
     if isinstance(error, urllib.error.HTTPError):
         return f"HTTP {error.code}"
     if isinstance(error, urllib.error.URLError):
@@ -187,17 +216,37 @@ class Collector:
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
-    def get(self, url):
+    def get(self, url, parse=None):
+        parts = urllib.parse.urlsplit(url)
+        if parts.hostname not in {"www.mofa.go.kr", "overseas.mofa.go.kr", "vancouver.mofa.go.kr"} or not parts.path.startswith("/ca-vancouver-ko/"):
+            raise ParseFailure("허용된 총영사관 주소가 아닙니다.")
+        failures = []
+        for origin in SITE_ORIGINS:
+            target = origin + parts.path + ("?" + parts.query if parts.query else "")
+            try:
+                content = self._get_origin(target)
+                result = parse(content) if parse else content
+                if failures:
+                    LOG.info("Official site backup succeeded: %s", target)
+                return result
+            except (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError, UnicodeDecodeError, ParseFailure) as exc:
+                reason = error_description(exc)
+                failures.append((target, reason))
+                LOG.warning("Official site origin failed: %s — %s", target, reason)
+        raise SiteFailure(failures) from None
+
+    def _get_origin(self, url):
         request = urllib.request.Request(url, headers={"User-Agent": "ConsulateAlerts/1.0"})
         for attempt in range(3):
             try:
                 with self.opener.open(request, timeout=25) as response:
                     return response.read().decode("utf-8-sig")
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            except (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError) as exc:
                 reason = exc.reason if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError) else exc
                 retryable = not isinstance(reason, ssl.SSLCertVerificationError)
                 if isinstance(exc, urllib.error.HTTPError):
                     retryable = exc.code in {429, 500, 502, 503, 504}
+                    exc.close()
                 if not retryable or attempt == 2:
                     LOG.error("Official site request failed: %s", error_description(exc))
                     raise
@@ -209,31 +258,35 @@ class Collector:
         posts = {}
         if board.get("rss_id"):
             try:
-                for post in parse_rss(self.get(f'{BASE}/ca-vancouver-ko/brd/rss.do?brdId={board["rss_id"]}')):
+                for post in self.get(f'{BASE}/ca-vancouver-ko/brd/rss.do?brdId={board["rss_id"]}', parse_rss):
                     posts[post["url"]] = post
                 if self.reporter:
                     self.reporter.update(f'rss:{board["id"]}', f'{board["name"]} RSS')
             except Exception as exc:
-                LOG.warning("%s RSS unavailable (%s); reading lists", board["name"], type(exc).__name__)
+                LOG.warning("%s RSS unavailable (%s); reading lists", board["name"], error_description(exc))
                 if self.reporter:
                     self.reporter.update(f'rss:{board["id"]}', f'{board["name"]} RSS (목록으로 대체 수집)', exc)
         for page in range(1, pages + 1):
-            parser = BoardParser(board["id"])
-            parser.feed(self.get(f'{BASE}/ca-vancouver-ko/brd/{board["id"]}/list.do?page={page}'))
-            if not parser.posts:
-                raise ValueError("List has no recognizable posts; refusing to update state")
-            for post in parser.posts:
+            def parse_list(content):
+                parser = BoardParser(board["id"])
+                parser.feed(content)
+                if not parser.posts:
+                    raise ParseFailure(f"목록 {page}페이지에서 글번호(f_view)·제목·작성일을 갖춘 게시글을 찾지 못했습니다. 홈페이지 구조 변경 또는 오류 페이지 응답 가능성이 있습니다. 수집 기록은 보존합니다.")
+                return parser.posts
+            for post in self.get(f'{BASE}/ca-vancouver-ko/brd/{board["id"]}/list.do?page={page}', parse_list):
                 posts[post["url"]] = post
         return sorted(posts.values(), key=lambda p: int(urllib.parse.parse_qs(urllib.parse.urlsplit(p["url"]).query)["seq"][0]))
 
     def detail(self, url, title):
-        parser = DetailParser()
-        parser.feed(self.get(url))
-        if not parser.found_body:
-            raise ValueError("Post body not recognized")
-        date = re.search(r"\d{4}-\d{2}-\d{2}", " ".join(parser.header))
-        return {"date": date[0] if date else None,
-                "summary": summarize_body("".join(parser.text), title, parser.has_images)}
+        def parse_detail(content):
+            parser = DetailParser()
+            parser.feed(content)
+            if not parser.found_body:
+                raise ParseFailure("원문 HTML에서 본문 영역(.bo_con)을 찾지 못했습니다. 홈페이지 구조 변경 또는 오류 페이지 응답 가능성이 있습니다. 발송 대기 글은 보존합니다.")
+            date = re.search(r"\d{4}-\d{2}-\d{2}", " ".join(parser.header))
+            return {"date": date[0] if date else None,
+                    "summary": summarize_body("".join(parser.text), title, parser.has_images)}
+        return self.get(url, parse_detail)
 
 
 def database(path):
@@ -266,11 +319,11 @@ def telegram(token, channel, text):
             result = json.load(response)
     except urllib.error.HTTPError as exc:
         # Do not log the exception URL: it contains the bot token.
-        raise RuntimeError(f"Telegram HTTP {exc.code}; check channel permissions, token, and rate limits") from None
+        raise TelegramFailure(f"텔레그램 HTTP {exc.code}: 채널 권한·토큰·요청 제한을 확인하세요.") from None
     except Exception:
-        raise RuntimeError("Telegram network error; delivery outcome uncertain") from None
+        raise TelegramFailure("텔레그램 연결 오류: 전송 결과를 확인할 수 없습니다. 재시도 시 중복될 수 있습니다.") from None
     if not result.get("ok"):
-        raise RuntimeError("Telegram rejected the message")
+        raise TelegramFailure("텔레그램이 메시지를 거부했습니다 (응답 ok=false).")
 
 
 class IssueReporter:
@@ -288,7 +341,7 @@ class IssueReporter:
                 with self.conn:
                     self.conn.execute("INSERT OR REPLACE INTO issues VALUES (?,?,1,0)", (key, label))
                 message = (f'⚠️ <b>KoreaVancouverBot 장애 알림</b>\n\n{html.escape(label)}\n'
-                           f'오류 유형: <code>{html.escape(error_description(error))}</code>\n\n'
+                           f'오류 내용: <code>{html.escape(error_description(error))}</code>\n\n'
                            '다음 확인 주기에 재시도합니다. 같은 장애의 반복 알림은 생략합니다.')
                 self.send(message)
                 with self.conn:
@@ -319,7 +372,7 @@ def deliver(conn, send, get_detail, reporter=None):
                 raise
             failed = True
             reporter.update(f'detail:{url}', f'{name} 원문 조회·파싱: {title[:200]}', exc)
-            LOG.error("Post detail failed (%s); queued post retained", type(exc).__name__)
+            LOG.error("Post detail failed (%s); queued post retained", error_description(exc))
             continue
         if reporter:
             reporter.update(f'detail:{url}', f'{name} 원문 조회·파싱')
@@ -355,7 +408,7 @@ def cycle(config, collector, conn, send, reporter=None):
             LOG.info("%s: %d posts (%s)", board["name"], len(posts), "checked" if initialized else "baseline saved, no history sent")
         except Exception as exc:
             failed = True
-            LOG.error("%s: collection failed (%s); state retained", board["name"], type(exc).__name__)
+            LOG.error("%s: collection failed (%s); state retained", board["name"], error_description(exc))
             if reporter:
                 reporter.update(f'board:{board["id"]}', f'{board["name"]} 수집·파싱', exc)
     try:
