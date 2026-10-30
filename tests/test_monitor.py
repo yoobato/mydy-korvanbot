@@ -201,6 +201,43 @@ class MonitorTests(unittest.TestCase):
         self.assertIn('overseas.mofa.go.kr', messages[0])
         self.assertIn('www.mofa.go.kr', messages[0])
 
+    def test_detail_reads_labeled_dates_without_using_title_or_date_order(self):
+        collector = Collector()
+        def read(dates):
+            collector._get_origin = MagicMock(return_value=f'<div class="bo_head"><h2>2026-09-01 행사 안내</h2><dl>{dates}</dl></div><div class="bo_con">본문</div>')
+            return collector.detail(post(1)["url"], "목록 제목")
+        original = read('<dt>수정일</dt><dd>2026-10-24</dd><dt>작성일</dt><dd>2026-10-17</dd>')
+        self.assertEqual(original["date"], "2026-10-17")
+        self.assertEqual(original["modified_date"], "2026-10-24")
+        changed_date = read('<dt>작성일</dt><dd>2026-10-17</dd><dt>수정일</dt><dd>2026-10-25</dd>')
+        self.assertEqual(original["fingerprint"], changed_date["fingerprint"])
+        for value in ['', '<dt>수정일</dt><dd>-</dd>', '<dt>수정일</dt><dd>2026-02-30</dd>']:
+            self.assertIsNone(read(value)["modified_date"])
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.time.time", return_value=100000)
+    def test_edit_uses_original_modified_date_or_explicit_vancouver_detection_date(self, clock, sleep):
+        remember(self.conn, BOARD, [post(1)])
+        check_edits(self.conn, lambda text: None, detail, set(), {BOARD["id"]}, 100000)
+        messages = []
+        # 2026-10-30 00:30 UTC is still Oct 29 in Vancouver.
+        now = 1793320200
+        clock.return_value = now
+        for version, modified_date, expected in [
+                ("v2", "2026-10-24", "📅 수정일: 2026-10-24 (토)"),
+                ("v3", None, "📅 변경 확인일 (밴쿠버 기준): 2026-10-29 (목)")]:
+            updated = lambda url, title: {**detail(url, title), "fingerprint": version, "modified_date": modified_date}
+            now += 3600
+            clock.return_value = now
+            check_edits(self.conn, messages.append, updated, {post(1)["url"]}, {BOARD["id"]}, now)
+            self.assertIn(expected, messages[-1])
+            self.assertNotIn("📅 2026-10-01", messages[-1])
+        remember(self.conn, BOARD, [post(2)])
+        updated = lambda url, title: {**detail(url, title), "modified_date": "2026-10-24"}
+        deliver(self.conn, messages.append, updated)
+        self.assertIn("📅 2026-10-01 (목)", messages[-1])
+        self.assertNotIn("수정일:", messages[-1])
+
     def test_missing_detail_title_is_a_parse_failure(self):
         collector = Collector()
         collector._get_origin = MagicMock(return_value='<div class="bo_con">본문</div>')

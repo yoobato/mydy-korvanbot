@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 BASE = "https://www.mofa.go.kr"
@@ -171,10 +172,10 @@ def format_date(value):
     return f'{day:%Y-%m-%d} ({"월화수목금토일"[day.weekday()]})'
 
 
-def format_message(name, title, date, summary, url, edited=False):
+def format_message(name, title, date, summary, url, edited=False, date_label=""):
     return (('📝 <b>게시글 수정</b>\n\n' if edited else '') +
             f'🔔 <b>{html.escape(name)}</b>\n\n'
-            f'📅 {html.escape(format_date(date))}\n\n'
+            f'📅 {html.escape(date_label + ": " if date_label else "")}{html.escape(format_date(date))}\n\n'
             f'📝 <b>{html.escape(title[:1800])}</b>\n\n'
             f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
             f'🔗 <a href="{html.escape(url, quote=True)}">원문 보기</a>')
@@ -304,7 +305,17 @@ class Collector:
             parser.feed(content)
             if not parser.found_body:
                 raise ParseFailure("원문 HTML에서 본문 영역(.bo_con)을 찾지 못했습니다. 홈페이지 구조 변경 또는 오류 페이지 응답 가능성이 있습니다. 발송 대기 글은 보존합니다.")
-            date = re.search(r"\d{4}-\d{2}-\d{2}", " ".join(parser.header))
+            header = " ".join(parser.header)
+            def header_date(label):
+                match = re.search(label + r"\s*(\d{4}-\d{2}-\d{2})", header)
+                if match:
+                    try:
+                        return datetime.strptime(match[1], "%Y-%m-%d").strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+                return None
+            date = header_date("작성일")
+            modified_date = header_date("수정일")
             actual_title = " ".join("".join(parser.title).split())
             if not actual_title:
                 raise ParseFailure("원문 HTML에서 제목(.bo_head h2)을 읽지 못했습니다. 이전 수정 비교 기록은 보존합니다.")
@@ -320,7 +331,7 @@ class Collector:
                     absolute = urllib.parse.urlunsplit(("https", "www.mofa.go.kr", parts.path, parts.query, ""))
                 resources.append(absolute)
             payload = json.dumps([normalize(actual_title), normalize(body), sorted(set(resources))], ensure_ascii=False)
-            return {"date": date[0] if date else None, "title": actual_title,
+            return {"date": date, "modified_date": modified_date, "title": actual_title,
                     "fingerprint": hashlib.sha256(payload.encode()).hexdigest(),
                     "summary": summarize_body(body, actual_title, parser.has_images)}
         return self.get(url, parse_detail)
@@ -464,9 +475,12 @@ def check_edits(conn, send, get_detail, recent_urls, enabled_boards, started_at,
             reporter.update(f'edit:{url}', f'{name} 수정 확인·원문 파싱')
         changed = previous is not None and previous != detail["fingerprint"]
         if changed:
+            modified_date = detail.get("modified_date")
+            alert_date = modified_date or datetime.fromtimestamp(started_at, ZoneInfo("America/Vancouver")).strftime("%Y-%m-%d")
+            date_label = "수정일" if modified_date else "변경 확인일 (밴쿠버 기준)"
             try:
-                send(format_message(name, detail.get("title", title), detail["date"] or date,
-                                    detail["summary"], url, edited=True))
+                send(format_message(name, detail.get("title", title), alert_date,
+                                    detail["summary"], url, edited=True, date_label=date_label))
             except Exception as exc:
                 if reporter:
                     reporter.update('channel', '텔레그램 수정 알림 전송 (변경 기록은 보관)', exc)
