@@ -6,13 +6,13 @@ import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from monitor import BoardParser, Collector, DetailParser, IssueReporter, SiteFailure, cycle, database, deliver, error_description, format_date, format_message, parse_rss, remember, summarize_body
+from monitor import check_edits, BoardParser, Collector, DetailParser, IssueReporter, SiteFailure, cycle, database, deliver, error_description, format_date, format_message, parse_rss, remember, summarize_body
 
 BOARD = {"id": "m_4585", "name": "공지사항"}
 
 
 def detail(url, title):
-    return {"date": "2026-10-01", "summary": "본문 요약"}
+    return {"date": "2026-10-01", "summary": "본문 요약", "fingerprint": "original", "title": title}
 
 
 def post(seq, title="새 글"):
@@ -28,6 +28,102 @@ class MonitorTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
         self.temp.cleanup()
+
+    def test_existing_database_migrates_without_losing_delivery_records(self):
+        remember(self.conn, BOARD, [post(1)])
+        self.conn.execute("DROP TABLE snapshots")
+        self.conn.commit()
+        self.conn.close()
+        self.conn = database(Path(self.temp.name) / "state.sqlite3")
+        self.assertEqual(self.conn.execute("SELECT sent FROM posts").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM snapshots").fetchone()[0], 0)
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.time.time", return_value=100000)
+    def test_edit_baseline_recent_daily_restart_and_disabled_board(self, clock, sleep):
+        remember(self.conn, BOARD, [post(1), post(2)])
+        remember(self.conn, {"id": "disabled", "name": "제외"}, [post(3)])
+        messages = []
+        fetch = MagicMock(side_effect=detail)
+        self.assertFalse(check_edits(self.conn, messages.append, fetch, {post(1)["url"]}, {BOARD["id"]}, 100000))
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(messages, [])
+        # Recent posts are checked every cycle; older ones wait 24 hours.
+        clock.return_value = 103600
+        fetch.reset_mock()
+        check_edits(self.conn, messages.append, fetch, {post(1)["url"]}, {BOARD["id"]}, 103600)
+        fetch.assert_called_once_with(post(1)["url"], "새 글")
+        self.conn.close()
+        self.conn = database(Path(self.temp.name) / "state.sqlite3")
+        clock.return_value = 186400
+        fetch.reset_mock()
+        check_edits(self.conn, messages.append, fetch, set(), {BOARD["id"]}, 186400)
+        fetch.assert_called_once_with(post(2)["url"], "새 글")
+        self.assertEqual(messages, [])
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.time.time", return_value=100000)
+    def test_edit_failure_retries_without_acknowledging_change(self, clock, sleep):
+        remember(self.conn, BOARD, [post(1)])
+        check_edits(self.conn, lambda text: None, detail, set(), {BOARD["id"]}, 100000)
+        updated = lambda url, title: {**detail(url, title), "fingerprint": "changed", "title": "수정 <제목>"}
+        clock.return_value = 186400
+        def failed(text):
+            raise RuntimeError("send failed")
+        self.assertTrue(check_edits(self.conn, failed, updated, set(), {BOARD["id"]}, 186400))
+        self.assertEqual(self.conn.execute("SELECT fingerprint,checked_at FROM snapshots").fetchone(), ("original", 100000))
+        # Even an old post retries in the next cycle, rather than waiting a day.
+        clock.return_value = 190000
+        messages = []
+        check_edits(self.conn, messages.append, updated, set(), {BOARD["id"]}, 190000)
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0].startswith('📝 <b>게시글 수정</b>'))
+        self.assertIn("수정 &lt;제목&gt;", messages[0])
+        clock.return_value = 193600
+        check_edits(self.conn, messages.append, updated, {post(1)["url"]}, {BOARD["id"]}, 193600)
+        self.assertEqual(len(messages), 1)
+
+    @patch("monitor.time.time", return_value=100000)
+    def test_edit_parse_failure_preserves_snapshot_and_other_posts_continue(self, clock):
+        remember(self.conn, BOARD, [post(1), post(2)])
+        check_edits(self.conn, lambda text: None, detail, set(), {BOARD["id"]}, 100000)
+        def broken(url, title):
+            if url == post(1)["url"]:
+                raise ValueError()
+            return detail(url, title)
+        clock.return_value = 186400
+        private = []
+        self.assertTrue(check_edits(self.conn, lambda text: None, broken, set(), {BOARD["id"]},
+                                    186400, IssueReporter(self.conn, private.append)))
+        self.assertEqual(self.conn.execute("SELECT checked_at FROM snapshots WHERE url=?", (post(1)["url"],)).fetchone()[0], 100000)
+        self.assertEqual(self.conn.execute("SELECT checked_at FROM snapshots WHERE url=?", (post(2)["url"],)).fetchone()[0], 186400)
+        self.assertEqual(len(private), 1)
+
+    @patch("monitor.time.sleep")
+    def test_new_post_snapshot_does_not_generate_duplicate_edit(self, sleep):
+        remember(self.conn, BOARD, [post(1)])
+        remember(self.conn, BOARD, [post(2)])
+        messages = []
+        fetch = MagicMock(side_effect=detail)
+        deliver(self.conn, messages.append, fetch)
+        check_edits(self.conn, messages.append, fetch, {post(2)["url"]}, {BOARD["id"]}, 1)
+        self.assertEqual(len(messages), 1)
+        self.assertNotIn("게시글 수정", messages[0])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM snapshots").fetchone()[0], 2)
+
+    def test_fingerprint_covers_full_body_title_and_links_but_ignores_layout(self):
+        collector = Collector()
+        def parse(body, title="제목", extra=""):
+            collector._get_origin = MagicMock(return_value=f'<div class="bo_head"><h2><span class="krds-badge">공지</span>{title}</h2><dl>2026-10-01</dl></div><div class="bo_con">{body}{extra}</div><footer>ignored</footer>')
+            return collector.detail(post(1)["url"], "old title")
+        base = parse("가" * 400 + " 끝")
+        self.assertEqual(base["title"], "제목")
+        self.assertEqual(base["fingerprint"], parse("가" * 400 + "  \n끝")["fingerprint"])
+        self.assertEqual(base["summary"], parse("가" * 400 + " 수정")["summary"])
+        self.assertNotEqual(base["fingerprint"], parse("가" * 400 + " 수정")["fingerprint"])
+        self.assertNotEqual(base["fingerprint"], parse("가" * 400 + " 끝", title="바뀐 제목")["fingerprint"])
+        self.assertNotEqual(parse("본문", extra='<img src="a.jpg">')["fingerprint"], parse("본문", extra='<img src="b.jpg">')["fingerprint"])
+        self.assertEqual(parse("본문", extra='<a href="https://www.mofa.go.kr/file">링크</a>')["fingerprint"], parse("본문", extra='<a href="https://overseas.mofa.go.kr/file">링크</a>')["fingerprint"])
 
     @patch("monitor.time.sleep")
     def test_transient_site_timeout_recovers_before_reporting_issue(self, sleep):
@@ -94,7 +190,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_detail_structure_error_falls_back_and_both_failures_are_explained(self):
         collector = Collector()
-        collector._get_origin = MagicMock(side_effect=['<html>점검 중</html>', '<div class="bo_con">본문입니다.</div>'])
+        collector._get_origin = MagicMock(side_effect=['<html>점검 중</html>', '<div class="bo_head"><h2>제목</h2></div><div class="bo_con">본문입니다.</div>'])
         self.assertEqual(collector.detail(post(1)['url'], '제목')['summary'], '본문입니다.')
         collector._get_origin = MagicMock(return_value='<html>점검 중</html>')
         with self.assertRaises(SiteFailure) as failure:
@@ -104,6 +200,13 @@ class MonitorTests(unittest.TestCase):
         self.assertIn('.bo_con', messages[0])
         self.assertIn('overseas.mofa.go.kr', messages[0])
         self.assertIn('www.mofa.go.kr', messages[0])
+
+    def test_missing_detail_title_is_a_parse_failure(self):
+        collector = Collector()
+        collector._get_origin = MagicMock(return_value='<div class="bo_con">본문</div>')
+        with self.assertRaises(SiteFailure) as failure:
+            collector.detail(post(1)["url"], "이전 제목")
+        self.assertIn(".bo_head h2", error_description(failure.exception))
 
     def test_unrecognizable_list_explains_page_and_preserves_state(self):
         collector = Collector()

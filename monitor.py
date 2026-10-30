@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime
 import fcntl
+import hashlib
 import html
 import http.cookiejar
 import json
@@ -13,6 +14,7 @@ import socket
 import sqlite3
 import ssl
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -89,6 +91,10 @@ class DetailParser(HTMLParser):
         self.header = []
         self.has_images = False
         self.found_body = False
+        self.title_depth = None
+        self.badge_depth = None
+        self.title = []
+        self.resources = []
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -100,11 +106,19 @@ class DetailParser(HTMLParser):
             self.found_body = True
         if "bo_head" in classes:
             self.head_depth = self.depth
+        if self.head_depth is not None and tag == "h2":
+            self.title_depth = self.depth
+        if self.title_depth is not None and "krds-badge" in classes:
+            self.badge_depth = self.depth
         if self.body_depth is not None:
             if tag in {"script", "style"}:
                 self.hidden_depth = self.depth
             if tag == "img":
                 self.has_images = True
+                if attrs.get("src"):
+                    self.resources.append(attrs["src"])
+            if tag == "a" and attrs.get("href"):
+                self.resources.append(attrs["href"])
             if tag in {"br", "p", "li", "tr", "div"}:
                 self.text.append("\n")
 
@@ -113,6 +127,8 @@ class DetailParser(HTMLParser):
             self.text.append(data)
         if self.head_depth is not None:
             self.header.append(data)
+        if self.title_depth is not None and self.badge_depth is None:
+            self.title.append(data)
 
     def handle_endtag(self, tag):
         if tag in self.VOID_TAGS:
@@ -125,6 +141,10 @@ class DetailParser(HTMLParser):
             self.body_depth = None
         if self.depth == self.head_depth:
             self.head_depth = None
+        if self.depth == self.title_depth:
+            self.title_depth = None
+        if self.depth == self.badge_depth:
+            self.badge_depth = None
         self.depth = max(0, self.depth - 1)
 
 
@@ -151,8 +171,9 @@ def format_date(value):
     return f'{day:%Y-%m-%d} ({"월화수목금토일"[day.weekday()]})'
 
 
-def format_message(name, title, date, summary, url):
-    return (f'🔔 <b>{html.escape(name)}</b>\n\n'
+def format_message(name, title, date, summary, url, edited=False):
+    return (('📝 <b>게시글 수정</b>\n\n' if edited else '') +
+            f'🔔 <b>{html.escape(name)}</b>\n\n'
             f'📅 {html.escape(format_date(date))}\n\n'
             f'📝 <b>{html.escape(title[:1800])}</b>\n\n'
             f'<blockquote>{html.escape(summary)}</blockquote>\n\n'
@@ -284,8 +305,24 @@ class Collector:
             if not parser.found_body:
                 raise ParseFailure("원문 HTML에서 본문 영역(.bo_con)을 찾지 못했습니다. 홈페이지 구조 변경 또는 오류 페이지 응답 가능성이 있습니다. 발송 대기 글은 보존합니다.")
             date = re.search(r"\d{4}-\d{2}-\d{2}", " ".join(parser.header))
-            return {"date": date[0] if date else None,
-                    "summary": summarize_body("".join(parser.text), title, parser.has_images)}
+            actual_title = " ".join("".join(parser.title).split())
+            if not actual_title:
+                raise ParseFailure("원문 HTML에서 제목(.bo_head h2)을 읽지 못했습니다. 이전 수정 비교 기록은 보존합니다.")
+            body = "".join(parser.text)
+            # Compare the full text, not the short notification excerpt. Ignore
+            # layout-only whitespace, Unicode forms and the choice of mirror.
+            normalize = lambda value: " ".join(unicodedata.normalize("NFC", value).replace("\u200b", "").replace("\ufeff", "").split())
+            resources = []
+            for resource in parser.resources:
+                absolute = urllib.parse.urljoin(url, resource)
+                parts = urllib.parse.urlsplit(absolute)
+                if parts.hostname in {"www.mofa.go.kr", "overseas.mofa.go.kr", "vancouver.mofa.go.kr"}:
+                    absolute = urllib.parse.urlunsplit(("https", "www.mofa.go.kr", parts.path, parts.query, ""))
+                resources.append(absolute)
+            payload = json.dumps([normalize(actual_title), normalize(body), sorted(set(resources))], ensure_ascii=False)
+            return {"date": date[0] if date else None, "title": actual_title,
+                    "fingerprint": hashlib.sha256(payload.encode()).hexdigest(),
+                    "summary": summarize_body(body, actual_title, parser.has_images)}
         return self.get(url, parse_detail)
 
 
@@ -295,6 +332,7 @@ def database(path):
     conn.execute("CREATE TABLE IF NOT EXISTS boards (id TEXT PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS posts (url TEXT PRIMARY KEY, board TEXT, name TEXT, title TEXT, date TEXT, sent INTEGER)")
     conn.execute("CREATE TABLE IF NOT EXISTS issues (key TEXT PRIMARY KEY, label TEXT, active INTEGER, notified INTEGER)")
+    conn.execute("CREATE TABLE IF NOT EXISTS snapshots (url TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, checked_at REAL NOT NULL)")
     conn.commit()
     return conn
 
@@ -377,7 +415,7 @@ def deliver(conn, send, get_detail, reporter=None):
         if reporter:
             reporter.update(f'detail:{url}', f'{name} 원문 조회·파싱')
         try:
-            send(format_message(name, title, detail["date"] or date, detail["summary"], url))
+            send(format_message(name, detail.get("title", title), detail["date"] or date, detail["summary"], url))
         except Exception as exc:
             if reporter is None:
                 raise
@@ -388,13 +426,68 @@ def deliver(conn, send, get_detail, reporter=None):
             reporter.update('channel', '텔레그램 채널 전송')
         with conn:
             conn.execute("UPDATE posts SET sent=1 WHERE url=?", (url,))
+            save_snapshot(conn, url, detail, time.time())
         LOG.info("Published: %s", title)
         time.sleep(1.1)
     return failed
 
 
+def save_snapshot(conn, url, detail, checked_at):
+    if detail.get("fingerprint"):
+        conn.execute("INSERT OR REPLACE INTO snapshots VALUES (?,?,?)",
+                     (url, detail["fingerprint"], checked_at))
+
+
+def check_edits(conn, send, get_detail, recent_urls, enabled_boards, started_at, reporter=None):
+    """Baseline existing posts silently; retain the old fingerprint on failure."""
+    failed = False
+    rows = conn.execute("""SELECT p.url,p.board,p.name,p.title,p.date,s.fingerprint,s.checked_at
+        FROM posts p LEFT JOIN snapshots s ON s.url=p.url
+        WHERE p.sent=1 ORDER BY p.rowid""").fetchall()
+    for url, board, name, title, date, previous, checked_at in rows:
+        if board not in enabled_boards:
+            continue
+        if checked_at is not None and (checked_at >= started_at or
+                (url not in recent_urls and started_at - checked_at < 86400)):
+            continue
+        try:
+            detail = get_detail(url, title)
+            if not detail.get("fingerprint"):
+                raise ParseFailure("수정 비교에 필요한 원문 지문을 생성하지 못했습니다.")
+        except Exception as exc:
+            failed = True
+            if reporter:
+                reporter.update(f'edit:{url}', f'{name} 수정 확인·원문 파싱: {title[:200]}', exc)
+            LOG.error("Edit check failed (%s); previous snapshot retained", error_description(exc))
+            continue
+        if reporter:
+            reporter.update(f'edit:{url}', f'{name} 수정 확인·원문 파싱')
+        changed = previous is not None and previous != detail["fingerprint"]
+        if changed:
+            try:
+                send(format_message(name, detail.get("title", title), detail["date"] or date,
+                                    detail["summary"], url, edited=True))
+            except Exception as exc:
+                if reporter:
+                    reporter.update('channel', '텔레그램 수정 알림 전송 (변경 기록은 보관)', exc)
+                LOG.error("Edit alert delivery failed (%s); previous snapshot retained", type(exc).__name__)
+                return True
+            if reporter:
+                reporter.update('channel', '텔레그램 채널 전송')
+            LOG.info("Published edit: %s", detail.get("title", title))
+            time.sleep(1.1)
+        with conn:
+            save_snapshot(conn, url, detail, time.time())
+            conn.execute("UPDATE posts SET title=?,date=? WHERE url=?",
+                         (detail.get("title", title), detail["date"] or date, url))
+    return failed
+
+
 def cycle(config, collector, conn, send, reporter=None):
     failed = False
+    started_at = time.time()
+    recent_urls = set()
+    enabled_boards = {b["id"] for b in config["boards"] if b.get("enabled", True)}
     if reporter:
         reporter.retry_recoveries()
     for board in config["boards"]:
@@ -403,6 +496,7 @@ def cycle(config, collector, conn, send, reporter=None):
         try:
             posts = collector.collect(board, config["pages"])
             initialized = remember(conn, board, posts)
+            recent_urls.update(p["url"] for p in posts)
             if reporter:
                 reporter.update(f'board:{board["id"]}', f'{board["name"]} 수집·파싱')
             LOG.info("%s: %d posts (%s)", board["name"], len(posts), "checked" if initialized else "baseline saved, no history sent")
@@ -413,6 +507,7 @@ def cycle(config, collector, conn, send, reporter=None):
                 reporter.update(f'board:{board["id"]}', f'{board["name"]} 수집·파싱', exc)
     try:
         failed = deliver(conn, send, collector.detail, reporter) or failed
+        failed = check_edits(conn, send, collector.detail, recent_urls, enabled_boards, started_at, reporter) or failed
     except Exception as exc:
         failed = True
         LOG.error("Delivery failed (%s); queued posts retained", type(exc).__name__)
