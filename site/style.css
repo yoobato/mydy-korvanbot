@@ -6,6 +6,7 @@
   --green: #216852;
   --line: #dce2dd;
   --mint: #eaf1eb;
+  --section-tint: #f4f7f3;
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 28px; }
@@ -65,22 +66,23 @@ h2 { font-size: 32px; line-height: 1.4; font-weight: 700; letter-spacing: -1px; 
 .board-card h3 { font-size: 19px; font-weight: 650; margin: 24px 0 12px; letter-spacing: -.5px; line-height: 1.55; }
 .board-card p { font-size: 16px; color: var(--muted); line-height: 1.85; margin: 0 0 20px; }
 .source-label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--green); font-size: 14px; margin-top: auto; }
-.how { background: var(--mint); padding-top: 64px; padding-bottom: 64px; }
+.how { background: var(--section-tint); border-block: 1px solid #e2e8df; padding-top: 64px; padding-bottom: 64px; }
+.how .section-heading > p { color: #465c61; }
 .process-track { display: grid; grid-template-columns: 1fr 56px 1fr 56px 1fr; gap: 12px; align-items: start; margin-top: 36px; }
 .flow-step { text-align: center; min-width: 0; }
 .flow-step > svg { display: block; width: 88px; height: 88px; padding: 16px; border-radius: 18px; background: var(--mint); margin: 0 auto 20px; fill: none; stroke: var(--green); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .highlight-stroke { stroke-width: 5; stroke: #8cb59b; }
 .flow-step h3 { margin: 0 0 12px; font-size: 20px; line-height: 1.5; font-weight: 650; }
-.flow-step p { margin: 0 auto; max-width: 260px; color: var(--muted); font-size: 16px; line-height: 1.85; }
+.flow-step p { margin: 0 auto; max-width: 260px; color: #465c61; font-size: 16px; line-height: 1.85; }
 .flow-connector { padding-top: 34px; }
 .flow-connector svg { display: block; width: 56px; height: 20px; fill: none; stroke: #99afa0; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .flow-bead { fill: var(--green); stroke: none; opacity: 0; }
 .how.is-visible .flow-bead { animation: carry 1.6s ease-in-out 2; }
 .how.is-visible .flow-connector:nth-child(4) .flow-bead { animation-delay: .5s; }
 @keyframes carry { 0% { opacity: 0; transform: translateX(0); } 15% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; transform: translateX(50px); } }
-.technical-details { margin-top: 36px; border: 1px solid #d4e2d8; border-radius: 14px; background: #f0f5ef; }
+.technical-details { margin-top: 36px; border: 1px solid #dce5da; border-radius: 14px; background: #fff; }
 summary { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 64px; padding: 16px 24px; font-size: 16px; font-weight: 600; cursor: pointer; list-style: none; border-radius: 14px; }
-summary:hover { background: #e7efe5; }
+summary:hover { background: #f5f8f3; }
 summary:focus-visible { outline-offset: 3px; }
 summary::-webkit-details-marker { display: none; }
 summary > span { font-size: 24px; font-weight: 300; transition: transform .24s ease; }
@@ -150,15 +152,15 @@ footer nav a:hover { text-decoration: underline; }
   .hero-copy { max-width: 620px; }
   .lead br { display: none; }
   .telegram-preview { max-width: 550px; justify-self: center; }
-  .coverage { grid-template-columns: 1fr; gap: 24px; padding-top: 8px; padding-bottom: 44px; }
+  .coverage { grid-template-columns: 1fr; gap: 24px; padding-top: 8px; padding-bottom: 48px; }
   .region-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
   .coverage-map { max-width: 650px; }
-  .process-track { grid-template-columns: 1fr; gap: 12px; margin-top: 28px; }
+  .process-track { grid-template-columns: 1fr; gap: 8px; margin-top: 28px; }
   .flow-step > svg { width: 76px; height: 76px; margin-bottom: 16px; }
   .flow-step p { max-width: 420px; }
-  .flow-connector { padding-top: 0; height: 44px; display: grid; place-items: center; }
-  .flow-connector svg { transform: rotate(90deg); }
-  .how { padding-block: 48px; }
+  .flow-connector { padding-top: 0; height: 40px; display: grid; place-items: center; }
+  .flow-connector svg { width: 40px; transform: rotate(90deg); }
+  .how, .boards-section { padding-block: 48px; }
   .cta { flex-direction: column; align-items: flex-start; gap: 24px; }
   .footer-bottom { flex-direction: column; align-items: flex-start; gap: 8px; }
   .delivery-notes dl > div { grid-template-columns: 1fr; gap: 8px; }
@@ -190,7 +192,6 @@ footer nav a:hover { text-decoration: underline; }
   .footer-bottom { margin-top: 16px; gap: 4px; }
   footer nav { display: flex; width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 0 24px; }
   footer nav a:first-child { flex-basis: 100%; }
-  .boards-section { padding-block: 44px; }
   .board-grid { gap: 12px; }
   .board-card { padding: 20px 16px; }
   .board-card h3 { font-size: 18px; }
