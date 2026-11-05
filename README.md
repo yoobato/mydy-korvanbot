@@ -72,7 +72,7 @@
 
 ## 소개 웹사이트
 
-소개 페이지는 총영사관 관할지역(BC·알버타·서스캐처원·유콘·노스웨스트 준주)을 위한 알림 서비스를 안내합니다. 실제 [2026년 11월 캘거리 순회영사 공지](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_4585/view.do?seq=1347776&page=1)를 알림 예시로 사용하고, HTML·RSS 수집과 원문 발췌 방식을 설명합니다. 게시판과 예시 원문 링크는 새 탭으로 열립니다. 관할지역 출처는 [주캐나다 대한민국 대사관의 총영사관 안내](https://www.mofa.go.kr/ca-ko/wpge/m_5340/contents.do)입니다.
+소개 페이지는 총영사관 관할지역(BC·알버타·서스캐처원·유콘·노스웨스트 준주)을 위한 알림 서비스를 안내합니다. 실제 [2026년 11월 캘거리 순회영사 공지](https://www.mofa.go.kr/ca-vancouver-ko/brd/m_4585/view.do?seq=1347776&page=1)를 전달한 [실제 채널 게시글](https://t.me/korea_vancouver/42)을 [텔레그램 공식 게시글 위젯](https://core.telegram.org/widgets/post)으로 표시하고, HTML·RSS 수집과 원문 발췌 방식을 설명합니다. 예시는 공개 채널의 실제 게시글이며, 국문·영문 페이지 모두 한국어 알림을 표시합니다. 텔레그램을 불러올 수 없거나 JavaScript를 사용할 수 없어도 게시글을 직접 여는 링크를 제공합니다. 게시판과 예시 원문 링크는 새 탭으로 열립니다. 관할지역 출처는 [주캐나다 대한민국 대사관의 총영사관 안내](https://www.mofa.go.kr/ca-ko/wpge/m_5340/contents.do)입니다.
 
 `site/`의 정적 소개 페이지를 GitHub Actions로 GitHub Pages에 배포합니다. `main`에서 소개 페이지나 배포 설정이 바뀌면 자동 배포합니다. 텔레그램 수집 워커는 기존 서버에서 별도로 실행됩니다.
 

@@ -32,21 +32,15 @@ h1 span { color: var(--green); }
 .button > span { margin-left: 5px; }
 .small { color: var(--muted); font-size: 14px; line-height: 1.8; margin: 16px 0 0; }
 .language-note { color: var(--green); font-size: 14px; margin: 14px 0 0; }
-.preview-shell { border: 1px solid #d6e2db; background: #edf3ee; border-radius: 22px; padding: 24px; box-shadow: 0 22px 50px #172e3810; transform: rotate(1deg); }
-.preview-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; font-size: 14px; }
-.channel-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: #fff; font-size: 23px; flex-shrink: 0; }
-.preview-heading strong { display: block; font-size: 14px; font-weight: 650; }
-.preview-heading div > span { display: block; color: var(--muted); font-size: 13px; }
-.example-label { margin-left: auto; border: 1px solid #c9d6cd; padding: 3px 9px; border-radius: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.message { background: #fff; border-radius: 4px 16px 16px 16px; padding: 24px; box-shadow: 0 3px 12px #172e3806; }
-.message p { margin: 0; }
-.board-label { font-size: 15px; font-weight: 700; }
-.message .message-date { font-size: 14px; color: var(--muted); margin-top: 20px; }
-.message h2 { font-size: 19px; line-height: 1.65; letter-spacing: -.4px; margin: 20px 0; }
-.message blockquote { border-left: 3px solid #79a894; background: #f1f6f2; border-radius: 5px; padding: 14px; margin: 0 0 12px; font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
-.message blockquote p + p { margin-top: 16px; }
-.example-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--green); }
-.preview-note { font-size: 13px; color: var(--muted); line-height: 1.8; margin: 16px 0 0; }
+.telegram-preview { margin: 0; min-width: 0; width: 100%; }
+.preview-label { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.preview-label svg { width: 18px; height: 18px; fill: #3390ec; flex-shrink: 0; }
+.telegram-embed { width: 100%; min-width: 0; }
+.telegram-embed iframe { display: block; width: 100%; min-width: 0 !important; max-width: 100%; }
+.telegram-post { margin: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #fff; font-size: 15px; }
+.preview-note { font-size: 12px; color: var(--muted); line-height: 1.8; margin: 12px 0 0; }
+.preview-note a { display: block; width: fit-content; min-height: 44px; padding-block: 10px; color: var(--green); }
+
 h2 { font-size: 32px; line-height: 1.4; font-weight: 700; letter-spacing: -1px; }
 .inline-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 14px; color: var(--green); }
 .coverage { display: grid; grid-template-columns: .95fr 1.25fr; gap: 48px; align-items: center; padding-top: 28px; padding-bottom: 64px; }
@@ -142,8 +136,6 @@ footer nav a:hover { text-decoration: underline; }
   .brand { font-size: 16px; }
   .hero { gap: 36px; }
   h1 { font-size: 46px; }
-  .preview-shell { padding: 20px; }
-  .message { padding: 20px; }
   .coverage { gap: 28px; }
   .board-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .board-card { padding: 24px; }
@@ -157,7 +149,7 @@ footer nav a:hover { text-decoration: underline; }
   h1 { font-size: 46px; }
   .hero-copy { max-width: 620px; }
   .lead br { display: none; }
-  .preview-shell { transform: none; max-width: 550px; width: 100%; justify-self: center; }
+  .telegram-preview { max-width: 550px; justify-self: center; }
   .coverage { grid-template-columns: 1fr; gap: 24px; padding-top: 8px; padding-bottom: 44px; }
   .region-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
   .coverage-map { max-width: 650px; }
@@ -182,15 +174,6 @@ footer nav a:hover { text-decoration: underline; }
   h1 { font-size: 40px; letter-spacing: -1.5px; }
   .lead { font-size: 18px; }
   .button { padding-inline: 20px; font-size: 16px; }
-  .preview-shell { padding: 16px; }
-  .preview-heading { gap: 8px; }
-  .channel-icon { width: 36px; height: 36px; font-size: 20px; }
-  .preview-heading strong { font-size: 13px; }
-  .preview-heading div > span { font-size: 12px; }
-  .example-label { padding: 3px 6px; font-size: 11px; }
-  .message { padding: 20px 16px; }
-  .message h2 { font-size: 18px; }
-  .message blockquote { font-size: 14px; padding: 12px; }
   h2 { font-size: 28px; }
   .coverage-copy > p, .section-heading > p { font-size: 16px; }
   .region-list { grid-template-columns: 1fr; }
@@ -217,12 +200,13 @@ footer nav a:hover { text-decoration: underline; }
   .cta h2 { font-size: 24px; }
 }
 @media (max-width: 360px) {
+  .telegram-preview { width: calc(100% + 40px); }
+  .preview-label, .preview-note { margin-inline: 20px; }
   .brand { font-size: 14px; gap: 6px; }
   .header { column-gap: 4px; }
   .language-switch a { min-width: 44px; }
   h1 { font-size: 36px; }
   .board-grid { grid-template-columns: 1fr; }
-  .example-label { font-size: 10px; padding-inline: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

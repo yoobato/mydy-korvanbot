@@ -24,6 +24,21 @@
     history.replaceState(null, '', url.pathname + url.search + url.hash);
   }
   document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.telegram-embed').forEach(embed => {
+      // The official widget inserts its own iframe asynchronously.
+      const labelFrame = () => {
+        const frame = embed.querySelector('iframe');
+        if (!frame) return false;
+        frame.title = embed.dataset.frameTitle;
+        return true;
+      };
+      if (!labelFrame()) {
+        const observer = new MutationObserver(() => {
+          if (labelFrame()) observer.disconnect();
+        });
+        observer.observe(embed, { childList: true });
+      }
+    });
     document.querySelectorAll('.technical-details').forEach(details => {
       const summary = details.querySelector('summary');
       let animation = null;
