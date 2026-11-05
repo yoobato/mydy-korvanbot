@@ -38,6 +38,9 @@ services:
       options:
         max-size: 2m
         max-file: "2"
+    # The image's Caddy binary requires this file capability at startup.
+    cap_add:
+      - NET_BIND_SERVICE
     volumes:
       - ./deploy/preview.Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/public:/srv:ro
