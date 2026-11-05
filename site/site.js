@@ -25,65 +25,19 @@
   }
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.telegram-embed').forEach(embed => {
-      const preview = embed.closest('.telegram-preview');
-      let renderedPost = null;
-      let refreshing = false;
-      const validPost = post => typeof post === 'string' && /^korea_vancouver\/[1-9]\d{0,15}$/.test(post);
-      const updateLinks = post => {
-        preview.querySelectorAll('a[data-preview-link]').forEach(link => {
-          link.href = 'https://t.me/' + post;
-        });
-      };
-      const render = post => {
-        if (!validPost(post) || renderedPost === post) return;
-        renderedPost = post;
-        updateLinks(post);
-        const fallback = document.createElement('blockquote');
-        fallback.className = 'telegram-post';
-        fallback.dataset.telegramPost = post;
-        fallback.dataset.width = '100%';
-        fallback.dataset.userpic = 'false';
-        const link = preview.querySelector('a[data-preview-link]').cloneNode(true);
-        fallback.append(link);
-        const script = document.createElement('script');
-        script.async = true;
-        script.src = 'https://telegram.org/js/telegram-widget.js?22';
-        script.onerror = () => { renderedPost = null; };
-        embed.replaceChildren(fallback, script);
-      };
+      // The official widget inserts its own iframe asynchronously.
       const labelFrame = () => {
         const frame = embed.querySelector('iframe');
-        if (frame) frame.title = embed.dataset.frameTitle;
+        if (!frame) return false;
+        frame.title = embed.dataset.frameTitle;
+        return true;
       };
-      const observer = new MutationObserver(labelFrame);
-      observer.observe(embed, { childList: true });
-      const refresh = async () => {
-        if (refreshing) return;
-        refreshing = true;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 4000);
-        try {
-          const response = await fetch(embed.dataset.latestUrl, {
-            cache: 'no-store', credentials: 'omit', signal: controller.signal
-          });
-          if (!response.ok) throw new Error('Preview unavailable');
-          const data = await response.json();
-          if (!validPost(data.post)) throw new Error('Invalid public post');
-          render(data.post);
-        } catch {
-          if (!renderedPost) render(embed.dataset.fallbackPost);
-        } finally {
-          clearTimeout(timeout);
-          refreshing = false;
-        }
-      };
-      refresh();
-      setInterval(() => {
-        if (document.visibilityState === 'visible') refresh();
-      }, 60000);
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') refresh();
-      });
+      if (!labelFrame()) {
+        const observer = new MutationObserver(() => {
+          if (labelFrame()) observer.disconnect();
+        });
+        observer.observe(embed, { childList: true });
+      }
     });
     document.querySelectorAll('.technical-details').forEach(details => {
       const summary = details.querySelector('summary');
