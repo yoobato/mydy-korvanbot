@@ -55,7 +55,7 @@ h2 { font-size: 32px; line-height: 1.4; font-weight: 700; letter-spacing: -1px; 
 .coverage-map figcaption a { display: inline-flex; align-items: center; min-height: 44px; }
 .map-legend { display: inline-flex; align-items: center; gap: 9px; }
 .map-legend > span { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: #2d7059; }
-.boards-section { background: var(--mint); padding-block: 64px; }
+.boards-section { background: var(--paper); padding-block: 64px; }
 .section-heading h2 { margin: 0 0 16px; }
 .section-heading > p { font-size: 17px; color: var(--muted); margin: 0; }
 .board-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 32px; }
@@ -65,7 +65,7 @@ h2 { font-size: 32px; line-height: 1.4; font-weight: 700; letter-spacing: -1px; 
 .board-card h3 { font-size: 19px; font-weight: 650; margin: 24px 0 12px; letter-spacing: -.5px; line-height: 1.55; }
 .board-card p { font-size: 16px; color: var(--muted); line-height: 1.85; margin: 0 0 20px; }
 .source-label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--green); font-size: 14px; margin-top: auto; }
-.how { padding-top: 64px; padding-bottom: 64px; }
+.how { background: var(--mint); padding-top: 64px; padding-bottom: 64px; }
 .process-track { display: grid; grid-template-columns: 1fr 56px 1fr 56px 1fr; gap: 12px; align-items: start; margin-top: 36px; }
 .flow-step { text-align: center; min-width: 0; }
 .flow-step > svg { display: block; width: 88px; height: 88px; padding: 16px; border-radius: 18px; background: var(--mint); margin: 0 auto 20px; fill: none; stroke: var(--green); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
