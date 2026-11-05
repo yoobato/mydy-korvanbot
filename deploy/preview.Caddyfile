@@ -1,0 +1,19 @@
+{
+	admin off
+	persist_config off
+	auto_https off
+}
+
+:8080 {
+	@latest path /latest.json
+	handle @latest {
+		root * /srv
+		header Access-Control-Allow-Origin "*"
+		header Cache-Control "no-store"
+		header X-Content-Type-Options "nosniff"
+		file_server
+	}
+	handle {
+		respond 404
+	}
+}

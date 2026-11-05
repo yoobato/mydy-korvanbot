@@ -21,3 +21,30 @@ services:
     volumes:
       - ./data:/data
       - ./boards.json:/app/boards.json:ro
+  preview:
+    image: caddy:2.10-alpine
+    profiles: [public-preview]
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.1
+    pids_limit: 32
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 2m
+        max-file: "2"
+    volumes:
+      - ./deploy/preview.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/public:/srv:ro
+    networks:
+      edge:
+        aliases: [korvanbot-preview]
+networks:
+  edge:
+    external: true
+    name: mydy_edge

@@ -22,6 +22,8 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
+from preview import PreviewFailure, refresh_preview, write_preview
+
 ROOT = Path(__file__).resolve().parent
 BASE = "https://www.mofa.go.kr"
 SITE_ORIGINS = ("https://overseas.mofa.go.kr", BASE)
@@ -208,7 +210,7 @@ def error_description(error):
     """Describe network failures without exposing URLs, credentials or response bodies."""
     if isinstance(error, SiteFailure):
         return "기본·백업 주소 모두 실패했습니다.\n" + "\n".join(f"{url}\n{reason}" for url, reason in error.failures)
-    if isinstance(error, (ParseFailure, TelegramFailure)):
+    if isinstance(error, (ParseFailure, TelegramFailure, PreviewFailure)):
         return str(error)
     reason = error.reason if isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError) else error
     if isinstance(reason, ssl.SSLCertVerificationError):
@@ -373,6 +375,21 @@ def telegram(token, channel, text):
         raise TelegramFailure("텔레그램 연결 오류: 전송 결과를 확인할 수 없습니다. 재시도 시 중복될 수 있습니다.") from None
     if not result.get("ok"):
         raise TelegramFailure("텔레그램이 메시지를 거부했습니다 (응답 ok=false).")
+    return result.get("result", {}).get("message_id")
+
+
+def publish(token, channel, text, preview_path, reporter=None):
+    message_id = telegram(token, channel, text)
+    # A preview failure must never resend a successfully published notification.
+    try:
+        write_preview(preview_path, message_id)
+        if reporter:
+            reporter.update('preview', '소개페이지 최신 알림 갱신')
+    except Exception as exc:
+        LOG.error("Preview update failed: %s", error_description(exc))
+        if reporter:
+            reporter.update('preview', '소개페이지 최신 알림 갱신', exc)
+    return message_id
 
 
 class IssueReporter:
@@ -545,7 +562,6 @@ def main():
     channel = os.environ.get("TELEGRAM_CHANNEL_ID")
     if not token or not channel:
         parser.error("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID in the external secrets file")
-    send = lambda text: telegram(token, channel, text)
     state = Path(os.environ.get("STATE_PATH", str(ROOT / "data" / "state.sqlite3")))
     state.parent.mkdir(parents=True, exist_ok=True)
     with state.with_suffix(".lock").open("w") as lock:
@@ -557,8 +573,18 @@ def main():
         admin = os.environ.get("TELEGRAM_ADMIN_CHAT_ID")
         reporter = IssueReporter(conn, lambda text: telegram(token, admin, text)) if admin else None
         collector = Collector(reporter)
+        preview_path = state.parent / "public" / "latest.json"
+        send = lambda text: publish(token, channel, text, preview_path, reporter)
         try:
             while True:
+                try:
+                    refresh_preview(preview_path)
+                    if reporter:
+                        reporter.update('preview', '소개페이지 최신 알림 갱신')
+                except Exception as exc:
+                    LOG.error("Preview refresh failed (%s); last known post retained", error_description(exc))
+                    if reporter:
+                        reporter.update('preview', '소개페이지 최신 알림 갱신', exc)
                 try:
                     cycle(config, collector, conn, send, reporter)
                 except Exception as exc:
